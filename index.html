@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#000000">
+  <title>TALOS 2.0</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
+  <link rel="stylesheet" href="css/hud.css">
+</head>
+<body>
+  <!-- Camera Feed (hidden video element - frames drawn to canvas) -->
+  <video id="camera-feed" autoplay playsinline muted></video>
+
+  <!-- HUD Canvas Overlay -->
+  <canvas id="hud-canvas"></canvas>
+
+  <!-- Visual Effects -->
+  <div class="vignette"></div>
+  <div class="scanline"></div>
+
+  <!-- Touch Interaction Layer -->
+  <div id="touch-layer"></div>
+
+  <!-- Top Status Bar -->
+  <div id="hud-top-bar">
+    <div class="top-bar-left">
+      <span style="font-weight:bold; font-size:11px;">TALOS 2.0</span>
+      <span class="status-dot green" id="system-status-dot"></span>
+    </div>
+    <div class="top-bar-center">
+      <span id="fps-display">-- FPS</span>
+      <span id="detection-count">0 TGT</span>
+    </div>
+    <div class="top-bar-right">
+      <span id="model-status">MODELS: --</span>
+      <span id="clock">00:00:00</span>
+    </div>
+  </div>
+
+  <!-- Mission Bar -->
+  <div id="mission-bar">
+    <span id="mission-display">NO MISSION LOADED</span>
+  </div>
+
+  <!-- Compass -->
+  <div id="compass">N &nbsp; NE &nbsp; E &nbsp; SE &nbsp; S &nbsp; SW &nbsp; W &nbsp; NW &nbsp; N</div>
+
+  <!-- Suit Power Bar (Left Edge) -->
+  <div id="suit-power-bar">
+    <div id="suit-power-fill" style="height:82%"></div>
+  </div>
+
+  <!-- Drone Fleet Status (Top Right) -->
+  <div id="drone-fleet-bar">
+    <div>FLEET: <span class="drone-count" id="fleet-active">0</span>/<span id="fleet-total">0</span></div>
+    <div>STK: <span id="fleet-strikes">0</span> | BAT: <span id="fleet-battery">--%</span></div>
+  </div>
+
+  <!-- Bottom Bar -->
+  <div id="hud-bottom-bar">
+    <div>
+      <span id="scene-type">SCENE: --</span>
+    </div>
+    <div>
+      <span id="threat-summary">THREATS: 0</span> |
+      <span id="civ-summary">CIV: 0</span>
+    </div>
+    <div>
+      <span id="intel-status">MAVEN: <span class="status-dot green"></span></span>
+    </div>
+  </div>
+
+  <!-- Threat Detail Panel (slides up from bottom) -->
+  <div id="threat-panel">
+    <div class="threat-header">
+      <span id="tp-classification">--</span>
+      <span id="tp-threat-level">0.00</span>
+    </div>
+    <div class="threat-score-bar">
+      <div class="threat-score-fill" id="tp-score-bar" style="width:0%"></div>
+    </div>
+    <div id="tp-mission-impact" style="color:var(--hud-caution); margin:4px 0;"></div>
+    <div id="tp-enemy-analysis" style="margin:6px 0;"></div>
+    <div id="tp-terrain-context" style="margin:6px 0;"></div>
+    <div id="tp-distance" style="margin:4px 0;"></div>
+    <div id="tp-strengths" style="margin:6px 0;"></div>
+    <div id="tp-weaknesses" style="margin:6px 0;"></div>
+    <div id="tp-coas" style="margin:8px 0;"></div>
+    <div id="tp-civil-warnings" style="margin:6px 0;"></div>
+    <div id="tp-intel" style="margin:6px 0; opacity:0.7; font-size:9px;"></div>
+  </div>
+
+  <!-- Drone Command Panel -->
+  <div id="drone-command-panel">
+    <div style="border-bottom:1px solid var(--hud-secondary); padding-bottom:4px; margin-bottom:6px; font-weight:bold;">
+      DRONE COMMAND
+    </div>
+    <div id="drone-list"></div>
+  </div>
+
+  <!-- Boot Screen -->
+  <div id="boot-screen">
+    <div id="boot-title">TALOS 2.0</div>
+    <div class="boot-progress">
+      <div class="boot-progress-bar" id="boot-progress-bar"></div>
+    </div>
+    <div id="boot-log"></div>
+  </div>
+
+  <!-- ONNX Runtime Web -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+
+  <!-- App Modules -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "TALOS 2.0 - Tactical Exoskeleton Drone Command",
+  "short_name": "TALOS 2.0",
+  "description": "Tactical AR HUD for exoskeleton drone command system",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#00ffcc",
+  "icons": [
+    {
+      "src": "assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

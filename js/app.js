@@ -1,0 +1,687 @@
+// =============================================================================
+// TALOS 2.0 - Main Application Bootstrap
+// Initializes all systems, manages the perception→intelligence→display pipeline
+// =============================================================================
+
+// --- Core ---
+import { initCamera } from './core/camera.js';
+import { renderer, performanceManager } from './core/renderer.js';
+import { QualityLevel } from './core/performance.js';
+
+// --- Perception ---
+import { Detector } from './perception/detector.js';
+import { DepthEstimator } from './perception/depth.js';
+import { Segmentor } from './perception/segmentor.js';
+import { Tracker } from './perception/tracker.js';
+
+// --- Intelligence ---
+import { MavenMock } from './intel/maven-mock.js';
+import { threatEngine } from './intel/threat-engine.js';
+import { terrainAnalyzer } from './intel/terrain-analyzer.js';
+import { sceneClassifier } from './intel/scene-classifier.js';
+import { enemyAnalyzer } from './intel/enemy-analyzer.js';
+import { civilAnalyzer } from './intel/civil-analyzer.js';
+
+// --- Mission ---
+import { MissionContext } from './mission/mission-context.js';
+import { timeManager } from './mission/time-manager.js';
+
+// --- Drones ---
+import { droneManager } from './drones/drone-manager.js';
+import { droneTasking } from './drones/drone-tasking.js';
+
+// --- Suit ---
+import { suitStatus } from './suit/suit-status.js';
+
+// --- UI ---
+import { renderHudElements, renderDetectionBoxes } from './ui/hud-elements.js';
+import { renderDepthOverlay } from './ui/hud-overlays.js';
+import { terrainOverlay } from './ui/terrain-overlay.js';
+import { civilianOverlay } from './ui/civilian-overlay.js';
+import { droneOverlay } from './ui/drone-overlay.js';
+import { suitOverlay } from './ui/suit-overlay.js';
+import { threatPanel } from './ui/threat-panel.js';
+import { droneCommandPanel } from './ui/drone-command-panel.js';
+import { missionPanel } from './ui/mission-panel.js';
+import { touchHandler, hitTestDetections } from './ui/touch-handler.js';
+
+// =============================================================================
+// Application State
+// =============================================================================
+
+const state = {
+  // Perception instances
+  detector: null,
+  depth: null,
+  segmentor: null,
+  tracker: null,
+  maven: null,
+  missionContext: null,
+
+  // Current frame data
+  currentDetections: [],
+  currentTracked: [],
+  currentDepthMap: null,
+  depthWidth: 0,
+  depthHeight: 0,
+  depthFrameId: 0,
+  currentAssessments: [],
+
+  // Frame counters for cadence control
+  frameCount: 0,
+  depthCadence: 3,     // Run depth every N frames
+  intelCadence: 5,     // Run full intel analysis every N frames
+
+  // Flags
+  modelsLoaded: { detector: false, depth: false, segmentor: false },
+  missionActive: false,
+  lockedTrackId: null,
+
+  // Camera
+  video: null,
+  stream: null
+};
+
+// =============================================================================
+// Boot Sequence
+// =============================================================================
+
+const bootLog = document.getElementById('boot-log');
+const bootProgress = document.getElementById('boot-progress-bar');
+const bootScreen = document.getElementById('boot-screen');
+
+function logBoot(message, status = 'success') {
+  if (bootLog) {
+    const line = document.createElement('div');
+    line.className = `boot-line ${status}`;
+    line.textContent = `> ${message}`;
+    bootLog.appendChild(line);
+    bootLog.scrollTop = bootLog.scrollHeight;
+  }
+  console.log(`[BOOT] [${status.toUpperCase()}] ${message}`);
+}
+
+function setBootProgress(pct) {
+  if (bootProgress) bootProgress.style.width = pct + '%';
+}
+
+async function boot() {
+  try {
+    logBoot('TALOS 2.0 INITIALIZING...', 'loading');
+    setBootProgress(5);
+
+    // --- Register Service Worker ---
+    if ('serviceWorker' in navigator) {
+      try {
+        await navigator.serviceWorker.register('/sw.js');
+        logBoot('Service worker registered');
+      } catch {
+        logBoot('Service worker skipped (local dev)', 'loading');
+      }
+    }
+    setBootProgress(10);
+
+    // --- Suit Systems ---
+    logBoot('SUIT SYSTEMS...', 'loading');
+    suitStatus.startSimulation();
+    logBoot('Suit systems ONLINE');
+    setBootProgress(15);
+
+    // --- Camera ---
+    logBoot('CAMERA ARRAY...', 'loading');
+    try {
+      const cam = await initCamera();
+      state.video = cam.video;
+      state.stream = cam.stream;
+      logBoot(`Camera ONLINE (${cam.width}x${cam.height})`);
+    } catch (err) {
+      logBoot(`Camera FAILED: ${err.message}`, 'error');
+      logBoot('Continuing without camera...', 'loading');
+      state.video = document.getElementById('camera-feed');
+    }
+    setBootProgress(25);
+
+    // --- Initialize Renderer ---
+    renderer.init(state.video);
+    logBoot('Renderer initialized');
+    setBootProgress(30);
+
+    // --- Load Perception Models ---
+    logBoot('LOADING PERCEPTION MODELS...', 'loading');
+
+    // YOLO11n Detector
+    state.detector = new Detector();
+    try {
+      logBoot('Loading YOLO11n...', 'loading');
+      await state.detector.init();
+      state.modelsLoaded.detector = true;
+      logBoot('YOLO11n ONLINE');
+    } catch (err) {
+      logBoot(`YOLO11n FAILED: ${err.message}`, 'error');
+    }
+    setBootProgress(45);
+
+    // Depth Anything V2
+    state.depth = new DepthEstimator();
+    try {
+      logBoot('Loading Depth Anything V2...', 'loading');
+      await state.depth.init();
+      state.modelsLoaded.depth = true;
+      logBoot('Depth estimation ONLINE');
+    } catch (err) {
+      logBoot(`Depth estimation FAILED: ${err.message}`, 'error');
+    }
+    setBootProgress(60);
+
+    // MobileSAM
+    state.segmentor = new Segmentor();
+    try {
+      logBoot('Loading MobileSAM...', 'loading');
+      await state.segmentor.init();
+      state.modelsLoaded.segmentor = true;
+      logBoot('Segmentation ONLINE');
+    } catch (err) {
+      logBoot(`Segmentation FAILED: ${err.message}`, 'error');
+    }
+    setBootProgress(70);
+
+    // ByteTrack Tracker (no model needed)
+    state.tracker = new Tracker();
+    logBoot('ByteTrack tracker ONLINE');
+
+    // Update model status display
+    updateModelStatus();
+
+    // --- Drone Fleet ---
+    logBoot('DRONE FLEET...', 'loading');
+    // Fleet will be initialized when mission is selected
+    logBoot('Drone fleet STANDBY (awaiting mission)');
+    setBootProgress(75);
+
+    // --- METT-TC Framework ---
+    logBoot('METT-TC FRAMEWORK...', 'loading');
+    state.missionContext = new MissionContext();
+    state.maven = new MavenMock();
+    logBoot('Mission context READY');
+    logBoot('Maven Smart System STANDBY');
+    setBootProgress(80);
+
+    // --- Intelligence Systems ---
+    logBoot('INTELLIGENCE SYSTEMS...', 'loading');
+    logBoot('Terrain analyzer READY');
+    logBoot('Scene classifier READY');
+    logBoot('Enemy analyzer READY');
+    logBoot('Civil analyzer READY');
+    logBoot('Threat engine READY');
+    setBootProgress(85);
+
+    // --- Initialize UI ---
+    logBoot('HUD SYSTEMS...', 'loading');
+    initUI();
+    logBoot('HUD systems ONLINE');
+    setBootProgress(90);
+
+    // --- Register Overlays ---
+    registerOverlays();
+    logBoot('Overlays registered');
+    setBootProgress(95);
+
+    // --- Start Render Loop ---
+    renderer.start();
+    logBoot('Render loop ACTIVE');
+
+    // --- Complete ---
+    setBootProgress(100);
+    logBoot('ALL SYSTEMS NOMINAL - SUIT ONLINE', 'success');
+    logBoot('SELECT MISSION TO DEPLOY...', 'loading');
+
+    // Fade out boot screen
+    setTimeout(() => {
+      if (bootScreen) bootScreen.classList.add('fade-out');
+      // Show mission panel after boot
+      setTimeout(() => {
+        if (bootScreen) bootScreen.style.display = 'none';
+        missionPanel.show();
+      }, 1000);
+    }, 1500);
+
+  } catch (err) {
+    logBoot(`CRITICAL ERROR: ${err.message}`, 'error');
+    console.error('[BOOT] Fatal error:', err);
+  }
+}
+
+// =============================================================================
+// UI Initialization
+// =============================================================================
+
+function initUI() {
+  // Initialize panels
+  threatPanel.init();
+  droneCommandPanel.init();
+  missionPanel.init();
+  touchHandler.init();
+
+  // --- Touch Handlers ---
+  touchHandler.onTap((pos) => {
+    // Check if we tapped a detection
+    const det = hitTestDetections(pos.x, pos.y, state.currentDetections);
+    if (det) {
+      const assessment = state.currentAssessments.find(a => a.id === det.id || a.trackId === det.trackId);
+      if (assessment) {
+        threatPanel.show(assessment);
+        droneCommandPanel.setSelectedTarget(assessment.id, [pos.x, pos.y]);
+      }
+    } else {
+      // Tapped empty space - dismiss panel
+      if (threatPanel.isVisible()) {
+        threatPanel.hide();
+      }
+    }
+  });
+
+  touchHandler.onLongPress((pos) => {
+    // Trigger segmentation on tapped detection
+    const det = hitTestDetections(pos.x, pos.y, state.currentDetections);
+    if (det && state.modelsLoaded.segmentor) {
+      runSegmentation(pos.x, pos.y);
+    }
+  });
+
+  touchHandler.onDoubleTap((pos) => {
+    // Lock/track target
+    const det = hitTestDetections(pos.x, pos.y, state.currentDetections);
+    if (det) {
+      state.lockedTrackId = det.trackId || det.id;
+      console.log(`[APP] Locked on target: ${state.lockedTrackId}`);
+    } else {
+      state.lockedTrackId = null;
+    }
+  });
+
+  touchHandler.onSwipeDown(() => {
+    threatPanel.hide();
+  });
+
+  touchHandler.onSwipeRight(() => {
+    missionPanel.toggle();
+  });
+
+  touchHandler.onThreeFingerTap(() => {
+    const visible = terrainOverlay.toggle();
+    console.log(`[APP] Terrain overlay: ${visible ? 'ON' : 'OFF'}`);
+  });
+
+  // --- Drone Fleet Bar Click ---
+  const fleetBar = document.getElementById('drone-fleet-bar');
+  if (fleetBar) {
+    fleetBar.addEventListener('click', () => {
+      droneCommandPanel.toggle(droneManager.getFleetData());
+    });
+  }
+
+  // --- Drone Command Callbacks ---
+  droneCommandPanel.onTaskAssigned((task) => {
+    console.log(`[APP] Task assigned: ${task.taskType} → ${task.droneId}`);
+    const result = droneTasking.issueTask(task.droneId, task.taskType, {
+      targetTrackId: task.targetTrackId,
+      targetPosition: task.targetPosition
+    });
+    if (result.success) {
+      console.log(`[APP] Task issued successfully: ${result.drone} → ${task.taskType}`);
+    } else {
+      console.warn(`[APP] Task failed: ${result.reason}`);
+    }
+    // Refresh drone panel
+    droneCommandPanel.show(droneManager.getFleetData());
+  });
+
+  // --- Mission Selection ---
+  missionPanel.onMissionSelected((mission) => {
+    console.log(`[APP] Mission selected: ${mission.label}`);
+    activateMission(mission);
+  });
+}
+
+// =============================================================================
+// Mission Activation
+// =============================================================================
+
+function activateMission(mission) {
+  // Set mission context
+  state.missionContext.loadScenario(mission.id.toLowerCase());
+  threatEngine.setMissionContext(mission);
+
+  // Initialize drone fleet
+  droneManager.initFleet(mission.fleetComposition);
+  droneManager.startSimulation();
+
+  // Initialize time manager
+  timeManager.init(mission);
+  timeManager.startUpdates();
+
+  // Start Maven intel feed
+  state.maven.start();
+
+  // Set ROE in civil analyzer
+  civilAnalyzer.setROE(mission.rulesOfEngagement);
+
+  // Update mission bar display
+  const missionDisplay = document.getElementById('mission-display');
+  if (missionDisplay) {
+    missionDisplay.textContent = `${mission.missionType}: ${mission.taskAndPurpose.substring(0, 60)}...`;
+  }
+
+  state.missionActive = true;
+  console.log(`[APP] Mission ACTIVE: ${mission.label}`);
+}
+
+// =============================================================================
+// Overlay Registration
+// =============================================================================
+
+function registerOverlays() {
+  // zOrder: depth(1) → terrain(2) → detections(3) → civilians(4) → drones(5) → suit(6) → hud(7)
+
+  // Depth overlay (z=1)
+  renderer.registerOverlay('depth', (ctx, w, h, ts) => {
+    if (state.currentDepthMap) {
+      renderDepthOverlay(ctx, w, h, state.currentDepthMap,
+        state.depthWidth, state.depthHeight, 0.15, state.depthFrameId);
+    }
+  }, 1);
+
+  // Terrain overlay (z=2)
+  renderer.registerOverlay('terrain', (ctx, w, h, ts) => {
+    terrainOverlay.render(ctx, w, h);
+  }, 2);
+
+  // Detection boxes (z=3)
+  renderer.registerOverlay('detections', (ctx, w, h, ts) => {
+    renderDetectionBoxes(ctx, w, h, state.currentDetections);
+    renderer.setDetectionCount(state.currentDetections.length);
+  }, 3);
+
+  // Civilian overlay (z=4)
+  renderer.registerOverlay('civilians', (ctx, w, h, ts) => {
+    civilianOverlay.render(ctx, w, h, ts);
+  }, 4);
+
+  // Drone overlay (z=5)
+  renderer.registerOverlay('drones', (ctx, w, h, ts) => {
+    droneOverlay.render(ctx, w, h, ts);
+  }, 5);
+
+  // Suit overlay (z=6)
+  renderer.registerOverlay('suit', (ctx, w, h, ts) => {
+    suitOverlay.render(ctx, w, h, ts);
+  }, 6);
+
+  // HUD chrome (z=7)
+  renderer.registerOverlay('hud', (ctx, w, h, ts) => {
+    renderHudElements(ctx, w, h, ts);
+  }, 7);
+
+  // --- Start perception pipeline (runs alongside render) ---
+  startPerceptionLoop();
+}
+
+// =============================================================================
+// Perception + Intelligence Pipeline
+// =============================================================================
+
+let perceptionRunning = false;
+
+async function startPerceptionLoop() {
+  if (perceptionRunning) return;
+  perceptionRunning = true;
+
+  const processFrame = async () => {
+    if (!perceptionRunning) return;
+
+    state.frameCount++;
+    const quality = performanceManager.getQuality();
+
+    try {
+      // --- Detection (every frame if model loaded) ---
+      if (state.modelsLoaded.detector && state.video?.readyState >= 2) {
+        const canvas = renderer.getCanvas();
+        const ctx = renderer.getContext();
+        if (canvas && ctx) {
+          const inputSize = quality === QualityLevel.LOW || quality === QualityLevel.MINIMAL ? 240 : 320;
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const rawDetections = await state.detector.detect(imageData, inputSize);
+
+          // Track detections
+          const tracked = state.tracker.update(rawDetections);
+
+          // Build enriched detection list
+          state.currentDetections = tracked.map(t => ({
+            id: `TRK-${String(t.id).padStart(4, '0')}`,
+            trackId: t.id,
+            bbox: t.bbox,
+            class: t.className,
+            tacticalClass: mapTacticalClass(t.className),
+            confidence: t.score,
+            classification: 'UNKNOWN',
+            threatLevel: 0,
+            distance: null,
+            movement: {
+              speed: t.velocity ? Math.sqrt(t.velocity[0] ** 2 + t.velocity[1] ** 2) * 30 : 0,
+              heading: getMovementHeading(t.velocity),
+              bearing: t.velocity ? Math.atan2(t.velocity[0], -t.velocity[1]) * 180 / Math.PI : 0
+            },
+            onAvenue: null
+          }));
+
+          // --- Depth estimation (every Nth frame) ---
+          if (state.modelsLoaded.depth && state.frameCount % state.depthCadence === 0) {
+            if (quality !== QualityLevel.MEDIUM && quality !== QualityLevel.LOW && quality !== QualityLevel.MINIMAL) {
+              try {
+                const depthResult = await state.depth.estimate(imageData, rawDetections);
+                if (depthResult) {
+                  state.currentDepthMap = depthResult.depthMap;
+                  state.depthWidth = depthResult.width;
+                  state.depthHeight = depthResult.height;
+                  state.depthFrameId++;
+
+                  // Update detection distances from depth
+                  for (const det of state.currentDetections) {
+                    if (det.bbox) {
+                      const cx = Math.floor((det.bbox[0] + det.bbox[2] / 2) * state.depthWidth);
+                      const cy = Math.floor((det.bbox[1] + det.bbox[3] / 2) * state.depthHeight);
+                      const idx = cy * state.depthWidth + cx;
+                      if (idx >= 0 && idx < state.currentDepthMap.length) {
+                        const relDepth = state.currentDepthMap[idx];
+                        const meters = relDepth * 200; // Rough calibration
+                        det.distance = {
+                          meters,
+                          confidence: 0.6,
+                          zone: meters < 50 ? 'RED' : meters < 150 ? 'AMBER' : 'GREEN'
+                        };
+                      }
+                    }
+                  }
+                }
+              } catch (err) {
+                console.warn('[APP] Depth estimation error:', err.message);
+              }
+            }
+          }
+
+          // --- Intelligence Analysis (every Nth frame) ---
+          if (state.missionActive && state.frameCount % state.intelCadence === 0) {
+            runIntelligenceAnalysis();
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[APP] Perception frame error:', err);
+    }
+
+    // Schedule next perception frame (adaptive rate based on quality)
+    const delay = quality === QualityLevel.FULL ? 33 :
+                  quality === QualityLevel.HIGH ? 50 :
+                  quality === QualityLevel.MEDIUM ? 66 :
+                  quality === QualityLevel.LOW ? 100 : 150;
+
+    setTimeout(processFrame, delay);
+  };
+
+  processFrame();
+}
+
+function runIntelligenceAnalysis() {
+  const mavenIntel = state.maven ? {
+    sigint: state.maven.getLatest('sigint'),
+    geoint: state.maven.getLatest('geoint'),
+    humint: state.maven.getLatest('humint'),
+    threat: state.maven.getLatest('threat'),
+    environment: state.maven.getLatest('environment')
+  } : null;
+
+  // Scene classification
+  const scene = sceneClassifier.classify(
+    state.currentDetections,
+    state.currentDepthMap,
+    state.depthWidth,
+    state.depthHeight
+  );
+
+  // Update scene display
+  const sceneEl = document.getElementById('scene-type');
+  if (sceneEl) sceneEl.textContent = `SCENE: ${scene.type}`;
+
+  // Terrain analysis
+  const terrain = terrainAnalyzer.analyze(
+    state.currentDepthMap, state.depthWidth, state.depthHeight,
+    state.currentDetections, scene.type
+  );
+  terrainOverlay.update(terrain);
+
+  // Full threat analysis (METT-TC integrated)
+  state.currentAssessments = threatEngine.analyze(
+    state.currentDetections,
+    state.currentDepthMap, state.depthWidth, state.depthHeight,
+    mavenIntel
+  );
+
+  // Update detection threat levels from assessments
+  for (const assessment of state.currentAssessments) {
+    const det = state.currentDetections.find(d => d.id === assessment.id);
+    if (det) {
+      det.threatLevel = assessment.threatLevel;
+      det.classification = assessment.classification;
+    }
+  }
+
+  // Update civilian overlay
+  const civilData = civilAnalyzer.getCivilData();
+  civilianOverlay.update(civilData);
+
+  // Update drone overlay
+  droneOverlay.update(droneManager.getFleetData(), droneManager.getTaskingData());
+
+  // Update suit overlay
+  suitOverlay.update(suitStatus.getStatus());
+
+  // Update bottom bar
+  const threatCount = state.currentAssessments.filter(a => a.classification === 'HOSTILE').length;
+  const civCount = civilData.civilianPresence?.classification?.civilian || 0;
+  const threatSummary = document.getElementById('threat-summary');
+  const civSummary = document.getElementById('civ-summary');
+  if (threatSummary) threatSummary.textContent = `THREATS: ${threatCount}`;
+  if (civSummary) civSummary.textContent = `CIV: ${civCount}`;
+
+  // Update drone fleet DOM
+  droneManager.updateDOM();
+  suitStatus.updateDOM();
+
+  // If threat panel is showing, update it with latest data
+  if (threatPanel.isVisible()) {
+    const trackId = threatPanel.getSelectedTrackId();
+    const updated = state.currentAssessments.find(a => a.id === trackId);
+    if (updated) threatPanel.show(updated);
+  }
+}
+
+// =============================================================================
+// Segmentation
+// =============================================================================
+
+async function runSegmentation(x, y) {
+  if (!state.modelsLoaded.segmentor) return;
+  try {
+    console.log(`[APP] Running segmentation at (${x.toFixed(2)}, ${y.toFixed(2)})`);
+    // Encode current frame first
+    const canvas = renderer.getCanvas();
+    const ctx = renderer.getContext();
+    if (!canvas || !ctx) return;
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    await state.segmentor.encode(imageData);
+    const mask = await state.segmentor.segment(x, y);
+    if (mask) {
+      // Register temporary mask overlay
+      const { renderSegmentationMask } = await import('./ui/hud-overlays.js');
+      renderer.registerOverlay('segmentation', (ctx, w, h) => {
+        renderSegmentationMask(ctx, w, h, mask.data, mask.width, mask.height, [0, 255, 204, 0.3]);
+      }, 2.5); // Between terrain and detections
+
+      // Remove mask after 5 seconds
+      setTimeout(() => renderer.removeOverlay('segmentation'), 5000);
+    }
+  } catch (err) {
+    console.error('[APP] Segmentation error:', err);
+  }
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+function mapTacticalClass(cocoClass) {
+  const mapping = {
+    person: 'PERSONNEL',
+    car: 'VEHICLE', truck: 'VEHICLE', bus: 'VEHICLE',
+    motorcycle: 'LIGHT_VEHICLE', bicycle: 'LIGHT_VEHICLE',
+    airplane: 'AIRCRAFT',
+    cell_phone: 'COMMS_EQUIPMENT', laptop: 'COMMS_EQUIPMENT',
+    backpack: 'SUPPLY', suitcase: 'SUPPLY', handbag: 'SUPPLY',
+    knife: 'EDGED_WEAPON', scissors: 'EDGED_WEAPON'
+  };
+  return mapping[cocoClass] || 'UNKNOWN';
+}
+
+function getMovementHeading(velocity) {
+  if (!velocity) return 'STATIONARY';
+  const [vx, vy] = velocity;
+  const speed = Math.sqrt(vx * vx + vy * vy);
+  if (speed < 0.002) return 'STATIONARY';
+  // vy positive = moving down in screen = approaching
+  if (vy > Math.abs(vx) * 0.5) return 'APPROACHING';
+  if (vy < -Math.abs(vx) * 0.5) return 'RETREATING';
+  if (vx > 0) return 'LATERAL_RIGHT';
+  return 'LATERAL_LEFT';
+}
+
+function updateModelStatus() {
+  const el = document.getElementById('model-status');
+  if (!el) return;
+  const loaded = Object.values(state.modelsLoaded).filter(v => v).length;
+  const total = Object.keys(state.modelsLoaded).length;
+  el.textContent = `MODELS: ${loaded}/${total}`;
+  el.style.color = loaded === total ? 'var(--hud-primary)' :
+                   loaded > 0 ? 'var(--hud-caution)' : 'var(--hud-hostile)';
+}
+
+// =============================================================================
+// Launch
+// =============================================================================
+
+document.addEventListener('DOMContentLoaded', () => {
+  boot().catch(err => {
+    console.error('[APP] Boot failed:', err);
+    logBoot('FATAL: Boot sequence failed', 'error');
+  });
+});
