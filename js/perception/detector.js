@@ -109,7 +109,7 @@ export class Detector {
      * @returns {Promise<Array<{class: string, tacticalClass: string, score: number,
      *           bbox: number[], classId: number}>>}
      */
-    async detect(imageData, inputSize = 640) {
+    async detect(imageData, inputSize = 320) {
         if (!this._ready || !this._session) {
             return [];
         }

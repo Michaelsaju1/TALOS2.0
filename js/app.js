@@ -69,17 +69,24 @@ const state = {
 
   // Frame counters for cadence control
   frameCount: 0,
-  depthCadence: 3,     // Run depth every N frames
-  intelCadence: 5,     // Run full intel analysis every N frames
+  detectionCadence: 3,  // Run detection every N frames (skip frames for speed)
+  depthCadence: 30,     // Run depth every N frames (very expensive)
+  intelCadence: 10,     // Run full intel analysis every N frames
 
   // Flags
   modelsLoaded: { detector: false, depth: false, segmentor: false },
   missionActive: false,
   lockedTrackId: null,
+  perceptionBusy: false, // Prevent frame overlap
 
   // Camera
   video: null,
-  stream: null
+  stream: null,
+
+  // Cached image data to avoid redundant getImageData calls
+  _cachedImageData: null,
+  _captureCanvas: null,
+  _captureCtx: null
 };
 
 // =============================================================================
@@ -113,10 +120,11 @@ async function boot() {
     // --- Register Service Worker ---
     if ('serviceWorker' in navigator) {
       try {
-        await navigator.serviceWorker.register('/sw.js');
+        // Use relative path so it works on both localhost and GitHub Pages subdirectory
+        await navigator.serviceWorker.register('./sw.js');
         logBoot('Service worker registered');
       } catch {
-        logBoot('Service worker skipped (local dev)', 'loading');
+        logBoot('Service worker skipped', 'loading');
       }
     }
     setBootProgress(10);
@@ -149,41 +157,27 @@ async function boot() {
     // --- Load Perception Models ---
     logBoot('LOADING PERCEPTION MODELS...', 'loading');
 
-    // YOLO11n Detector
+    // YOLO11n Detector - PRIORITY: load this first, it's the core model
     state.detector = new Detector();
     try {
-      logBoot('Loading YOLO11n...', 'loading');
+      logBoot('Loading YOLO11n (~11MB)...', 'loading');
       await state.detector.init();
       state.modelsLoaded.detector = true;
       logBoot('YOLO11n ONLINE');
     } catch (err) {
       logBoot(`YOLO11n FAILED: ${err.message}`, 'error');
     }
-    setBootProgress(45);
+    setBootProgress(50);
 
-    // Depth Anything V2
+    // Depth & Segmentation - DEFERRED: load in background AFTER HUD is live
+    // These are heavy models (27MB + 45MB) that would block the boot sequence
     state.depth = new DepthEstimator();
-    try {
-      logBoot('Loading Depth Anything V2...', 'loading');
-      await state.depth.init();
-      state.modelsLoaded.depth = true;
-      logBoot('Depth estimation ONLINE');
-    } catch (err) {
-      logBoot(`Depth estimation FAILED: ${err.message}`, 'error');
-    }
-    setBootProgress(60);
-
-    // MobileSAM
     state.segmentor = new Segmentor();
-    try {
-      logBoot('Loading MobileSAM...', 'loading');
-      await state.segmentor.init();
-      state.modelsLoaded.segmentor = true;
-      logBoot('Segmentation ONLINE');
-    } catch (err) {
-      logBoot(`Segmentation FAILED: ${err.message}`, 'error');
-    }
-    setBootProgress(70);
+    logBoot('Depth + Segmentation DEFERRED (loading in background)');
+    setBootProgress(55);
+
+    // Start background loading of heavy models (non-blocking)
+    loadDeferredModels();
 
     // ByteTrack Tracker (no model needed)
     state.tracker = new Tracker();
@@ -427,10 +421,54 @@ function registerOverlays() {
 }
 
 // =============================================================================
-// Perception + Intelligence Pipeline
+// Deferred Model Loading (background, non-blocking)
+// =============================================================================
+
+async function loadDeferredModels() {
+  // Load depth model in background
+  try {
+    console.log('[APP] Background: loading Depth Anything V2...');
+    await state.depth.init();
+    state.modelsLoaded.depth = true;
+    console.log('[APP] Background: Depth Anything V2 ONLINE');
+    updateModelStatus();
+  } catch (err) {
+    console.warn('[APP] Background: Depth model failed:', err.message);
+  }
+
+  // Load segmentation model in background (lowest priority)
+  try {
+    console.log('[APP] Background: loading MobileSAM...');
+    await state.segmentor.init();
+    state.modelsLoaded.segmentor = true;
+    console.log('[APP] Background: MobileSAM ONLINE');
+    updateModelStatus();
+  } catch (err) {
+    console.warn('[APP] Background: Segmentation model failed:', err.message);
+  }
+}
+
+// =============================================================================
+// Perception + Intelligence Pipeline (Optimized)
 // =============================================================================
 
 let perceptionRunning = false;
+
+/**
+ * Capture frame from video directly (avoids expensive getImageData from rendered canvas).
+ * Uses a small offscreen canvas sized to detection input.
+ */
+function captureFrame(inputSize) {
+  if (!state.video || state.video.readyState < 2) return null;
+
+  if (!state._captureCanvas || state._captureCanvas.width !== inputSize) {
+    state._captureCanvas = new OffscreenCanvas(inputSize, inputSize);
+    state._captureCtx = state._captureCanvas.getContext('2d', { willReadFrequently: true });
+  }
+
+  state._captureCtx.drawImage(state.video, 0, 0, inputSize, inputSize);
+  return state._captureCtx.getImageData(0, 0, inputSize, inputSize);
+}
 
 async function startPerceptionLoop() {
   if (perceptionRunning) return;
@@ -439,17 +477,26 @@ async function startPerceptionLoop() {
   const processFrame = async () => {
     if (!perceptionRunning) return;
 
+    // GATE: prevent overlapping frames - if still processing, skip
+    if (state.perceptionBusy) {
+      requestAnimationFrame(processFrame);
+      return;
+    }
+
+    state.perceptionBusy = true;
     state.frameCount++;
-    const quality = performanceManager.getQuality();
 
     try {
-      // --- Detection (every frame if model loaded) ---
-      if (state.modelsLoaded.detector && state.video?.readyState >= 2) {
-        const canvas = renderer.getCanvas();
-        const ctx = renderer.getContext();
-        if (canvas && ctx) {
-          const inputSize = quality === QualityLevel.LOW || quality === QualityLevel.MINIMAL ? 240 : 320;
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const quality = performanceManager.getQuality();
+      const inputSize = quality === QualityLevel.LOW || quality === QualityLevel.MINIMAL ? 192 : 256;
+
+      // --- Detection (skip frames for speed) ---
+      const shouldDetect = state.modelsLoaded.detector &&
+                           state.frameCount % state.detectionCadence === 0;
+
+      if (shouldDetect && state.video?.readyState >= 2) {
+        const imageData = captureFrame(inputSize);
+        if (imageData) {
           const rawDetections = await state.detector.detect(imageData, inputSize);
 
           // Track detections
@@ -473,62 +520,63 @@ async function startPerceptionLoop() {
             },
             onAvenue: null
           }));
+        }
+      }
 
-          // --- Depth estimation (every Nth frame) ---
-          if (state.modelsLoaded.depth && state.frameCount % state.depthCadence === 0) {
-            if (quality !== QualityLevel.MEDIUM && quality !== QualityLevel.LOW && quality !== QualityLevel.MINIMAL) {
-              try {
-                const depthResult = await state.depth.estimate(imageData, rawDetections);
-                if (depthResult) {
-                  state.currentDepthMap = depthResult.depthMap;
-                  state.depthWidth = depthResult.width;
-                  state.depthHeight = depthResult.height;
-                  state.depthFrameId++;
+      // --- Depth estimation (very infrequent, only in FULL quality) ---
+      if (state.modelsLoaded.depth &&
+          state.frameCount % state.depthCadence === 0 &&
+          quality === QualityLevel.FULL) {
+        try {
+          const depthInput = captureFrame(256);
+          if (depthInput) {
+            const depthResult = await state.depth.estimate(depthInput);
+            if (depthResult) {
+              state.currentDepthMap = depthResult.depthMap;
+              state.depthWidth = depthResult.width;
+              state.depthHeight = depthResult.height;
+              state.depthFrameId++;
 
-                  // Update detection distances from depth
-                  for (const det of state.currentDetections) {
-                    if (det.bbox) {
-                      const cx = Math.floor((det.bbox[0] + det.bbox[2] / 2) * state.depthWidth);
-                      const cy = Math.floor((det.bbox[1] + det.bbox[3] / 2) * state.depthHeight);
-                      const idx = cy * state.depthWidth + cx;
-                      if (idx >= 0 && idx < state.currentDepthMap.length) {
-                        const relDepth = state.currentDepthMap[idx];
-                        const meters = relDepth * 200; // Rough calibration
-                        det.distance = {
-                          meters,
-                          confidence: 0.6,
-                          zone: meters < 50 ? 'RED' : meters < 150 ? 'AMBER' : 'GREEN'
-                        };
-                      }
-                    }
+              // Update detection distances
+              for (const det of state.currentDetections) {
+                if (det.bbox) {
+                  const cx = Math.floor((det.bbox[0] + det.bbox[2] / 2) * state.depthWidth);
+                  const cy = Math.floor((det.bbox[1] + det.bbox[3] / 2) * state.depthHeight);
+                  const idx = cy * state.depthWidth + cx;
+                  if (idx >= 0 && idx < state.currentDepthMap.length) {
+                    const relDepth = state.currentDepthMap[idx];
+                    const meters = relDepth * 200;
+                    det.distance = {
+                      meters,
+                      confidence: 0.6,
+                      zone: meters < 50 ? 'RED' : meters < 150 ? 'AMBER' : 'GREEN'
+                    };
                   }
                 }
-              } catch (err) {
-                console.warn('[APP] Depth estimation error:', err.message);
               }
             }
           }
-
-          // --- Intelligence Analysis (every Nth frame) ---
-          if (state.missionActive && state.frameCount % state.intelCadence === 0) {
-            runIntelligenceAnalysis();
-          }
+        } catch (err) {
+          console.warn('[APP] Depth estimation error:', err.message);
         }
       }
+
+      // --- Intelligence Analysis (infrequent) ---
+      if (state.missionActive && state.frameCount % state.intelCadence === 0) {
+        runIntelligenceAnalysis();
+      }
+
     } catch (err) {
       console.error('[APP] Perception frame error:', err);
     }
 
-    // Schedule next perception frame (adaptive rate based on quality)
-    const delay = quality === QualityLevel.FULL ? 33 :
-                  quality === QualityLevel.HIGH ? 50 :
-                  quality === QualityLevel.MEDIUM ? 66 :
-                  quality === QualityLevel.LOW ? 100 : 150;
+    state.perceptionBusy = false;
 
-    setTimeout(processFrame, delay);
+    // Use rAF to sync with display refresh, not setTimeout
+    requestAnimationFrame(processFrame);
   };
 
-  processFrame();
+  requestAnimationFrame(processFrame);
 }
 
 function runIntelligenceAnalysis() {
