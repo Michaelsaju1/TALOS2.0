@@ -212,6 +212,7 @@ async function boot() {
     // --- Initialize UI ---
     logBoot('HUD SYSTEMS...', 'loading');
     initUI();
+    initCompass();
     logBoot('HUD systems ONLINE');
     setBootProgress(90);
 
@@ -681,6 +682,79 @@ async function runSegmentation(x, y) {
     }
   } catch (err) {
     console.error('[APP] Segmentation error:', err);
+  }
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+// =============================================================================
+// Compass / Device Orientation
+// =============================================================================
+
+let currentHeading = null;
+
+function initCompass() {
+  const strip = document.getElementById('compass-strip');
+  const headingEl = document.getElementById('compass-heading');
+  if (!strip || !headingEl) return;
+
+  function updateCompass(heading) {
+    currentHeading = heading;
+    // Each span is 40px wide, 13 spans cover 0-360 with wrap
+    // heading 0 = N centered. Offset strip so current heading aligns with center indicator
+    const degreesPerSpan = 360 / 8; // 8 cardinal/intercardinal directions
+    const pixelsPerDegree = 40 / degreesPerSpan;
+    const offset = -(heading * pixelsPerDegree) + 100 - 20; // center in 200px container
+    strip.style.transform = `translateX(${offset}px)`;
+    headingEl.textContent = `${Math.round(heading)}\u00B0`;
+  }
+
+  function handleOrientation(e) {
+    let heading = null;
+    // iOS provides webkitCompassHeading (degrees from magnetic north)
+    if (e.webkitCompassHeading !== undefined) {
+      heading = e.webkitCompassHeading;
+    } else if (e.alpha !== null) {
+      // Android/other: alpha is degrees from arbitrary reference
+      // Approximate compass heading (not perfect without absolute orientation)
+      heading = (360 - e.alpha) % 360;
+    }
+    if (heading !== null) updateCompass(heading);
+  }
+
+  // iOS 13+ requires permission request for DeviceOrientation
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    // Create a one-time touch handler to request permission (iOS requires user gesture)
+    const requestPermission = async () => {
+      try {
+        const permission = await DeviceOrientationEvent.requestPermission();
+        if (permission === 'granted') {
+          window.addEventListener('deviceorientation', handleOrientation, true);
+          console.log('[COMPASS] Device orientation permission granted');
+        } else {
+          console.warn('[COMPASS] Permission denied');
+        }
+      } catch (err) {
+        console.warn('[COMPASS] Permission error:', err);
+      }
+      // Remove this one-time listener
+      document.removeEventListener('click', requestPermission);
+      document.removeEventListener('touchend', requestPermission);
+    };
+    // Attach to first user interaction
+    document.addEventListener('click', requestPermission, { once: true });
+    document.addEventListener('touchend', requestPermission, { once: true });
+    console.log('[COMPASS] Waiting for user gesture to request orientation permission');
+  } else if (typeof DeviceOrientationEvent !== 'undefined') {
+    // Non-iOS: just listen directly
+    window.addEventListener('deviceorientation', handleOrientation, true);
+    console.log('[COMPASS] Device orientation listener added');
+  } else {
+    console.warn('[COMPASS] DeviceOrientation API not available');
+    headingEl.textContent = 'N/A';
   }
 }
 
