@@ -27,8 +27,8 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  // Network-first for model files (large, may update)
-  if (e.request.url.includes('/models/')) {
+  // Network-first for model files from HuggingFace (large, cross-origin)
+  if (e.request.url.includes('huggingface.co')) {
     e.respondWith(
       fetch(e.request).catch(() => caches.match(e.request))
     );

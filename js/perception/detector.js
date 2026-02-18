@@ -68,7 +68,7 @@ export class Detector {
     async init() {
         console.log('[DETECTOR] Initializing YOLO11n object detection...');
 
-        const modelPath = '/models/yolo11n.onnx';
+        const modelPath = 'https://huggingface.co/deepghs/yolos/resolve/main/yolo11n/model.onnx';
 
         // Try WebGPU first for maximum performance
         const backends = ['webgpu', 'wasm'];

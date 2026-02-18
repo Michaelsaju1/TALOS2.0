@@ -52,7 +52,7 @@ export class DepthEstimator {
     async init() {
         console.log('[DEPTH] Initializing Depth Anything V2 Small...');
 
-        const modelPath = '/models/depth-anything-v2-small.onnx';
+        const modelPath = 'https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_quantized.onnx';
         const backends = ['webgpu', 'wasm'];
 
         for (const backend of backends) {

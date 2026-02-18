@@ -53,8 +53,8 @@ export class Segmentor {
     async init() {
         console.log('[SEGMENT] Initializing MobileSAM segmentation...');
 
-        const encoderPath = '/models/mobile-sam/encoder.onnx';
-        const decoderPath = '/models/mobile-sam/decoder.onnx';
+        const encoderPath = 'https://huggingface.co/Acly/MobileSAM/resolve/main/mobile_sam_image_encoder.onnx';
+        const decoderPath = 'https://huggingface.co/Acly/MobileSAM/resolve/main/sam_mask_decoder_single.onnx';
 
         const backends = ['webgpu', 'wasm'];
         let loaded = false;
