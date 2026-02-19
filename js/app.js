@@ -33,6 +33,9 @@ import { droneTasking } from './drones/drone-tasking.js';
 // --- Suit ---
 import { suitStatus } from './suit/suit-status.js';
 
+// --- OSINT ---
+import { osintFeeds } from './intel/osint-feeds.js';
+
 // --- UI ---
 import { renderHudElements, renderDetectionBoxes } from './ui/hud-elements.js';
 import { renderDepthOverlay } from './ui/hud-overlays.js';
@@ -40,6 +43,7 @@ import { terrainOverlay } from './ui/terrain-overlay.js';
 import { civilianOverlay } from './ui/civilian-overlay.js';
 import { droneOverlay } from './ui/drone-overlay.js';
 import { suitOverlay } from './ui/suit-overlay.js';
+import { osintOverlay } from './ui/osint-overlay.js';
 import { threatPanel } from './ui/threat-panel.js';
 import { droneCommandPanel } from './ui/drone-command-panel.js';
 import { missionPanel } from './ui/mission-panel.js';
@@ -198,6 +202,12 @@ async function boot() {
     initCompass();
     initGeolocation();
     logBoot('HUD systems ONLINE');
+    setBootProgress(88);
+
+    // --- OSINT Feeds ---
+    logBoot('OSINT FEEDS...', 'loading');
+    initOSINT();
+    logBoot('OSINT feeds ACTIVE (aircraft, weather, cameras)');
     setBootProgress(90);
 
     // --- Register Overlays ---
@@ -397,6 +407,11 @@ function registerOverlays() {
   renderer.registerOverlay('suit', (ctx, w, h, ts) => {
     suitOverlay.render(ctx, w, h, ts);
   }, 6);
+
+  // OSINT overlay (z=6.5) - between suit and HUD chrome
+  renderer.registerOverlay('osint', (ctx, w, h, ts) => {
+    osintOverlay.render(ctx, w, h, ts);
+  }, 6.5);
 
   // HUD chrome (z=7)
   renderer.registerOverlay('hud', (ctx, w, h, ts) => {
@@ -628,6 +643,9 @@ function runIntelligenceAnalysis() {
   // Update suit overlay
   suitOverlay.update(suitStatus.getStatus());
 
+  // Update OSINT overlay (data updates via callback, but refresh heading)
+  osintOverlay.setOperatorHeading(currentHeading || 0);
+
   // Update bottom bar
   const threatCount = state.currentAssessments.filter(a => a.classification === 'HOSTILE').length;
   const civCount = civilData.civilianPresence?.classification?.civilian || 0;
@@ -703,6 +721,9 @@ function initCompass() {
     const offset = -(heading * pixelsPerDegree) + 100 - 20; // center in 200px container
     strip.style.transform = `translateX(${offset}px)`;
     headingEl.textContent = `${Math.round(heading)}\u00B0`;
+
+    // Feed heading to OSINT overlay for relative bearing calculation
+    osintOverlay.setOperatorHeading(heading);
   }
 
   function handleOrientation(e) {
@@ -775,6 +796,9 @@ function initGeolocation() {
       const lon = pos.coords.longitude;
       coordsEl.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
 
+      // Feed position to OSINT feeds
+      osintFeeds.setPosition(lat, lon);
+
       // Reverse geocode for city/state (rate limited to every 30s)
       const now = Date.now();
       if (now - lastGeoLookup > 30000) {
@@ -810,6 +834,28 @@ async function reverseGeocode(lat, lon, el) {
   } catch (err) {
     console.warn('[GEO] Reverse geocode failed:', err.message);
   }
+}
+
+// =============================================================================
+// OSINT Initialization
+// =============================================================================
+
+function initOSINT() {
+  // Register OSINT data update callback
+  osintFeeds.onUpdate((data) => {
+    const summary = osintFeeds.getTacticalSummary();
+    osintOverlay.update(data, summary);
+
+    // Update OSINT status dot in bottom bar
+    const dot = document.getElementById('osint-dot');
+    if (dot) {
+      const active = summary.feedsActive;
+      dot.className = active > 0 ? 'status-dot green' : 'status-dot amber';
+    }
+  });
+
+  // Start feeds (they'll wait for GPS position before first fetch)
+  osintFeeds.start();
 }
 
 // =============================================================================
