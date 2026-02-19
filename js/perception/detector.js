@@ -1,6 +1,7 @@
 // =============================================================================
-// TALOS 2.0 - Object Detector via TensorFlow.js COCO-SSD
-// Uses WebGL backend for fast inference directly on video element
+// TALOS 2.0 - Object Detector via MediaPipe Tasks Vision
+// Dynamically loaded, GPU-accelerated, synchronous detectForVideo()
+// EfficientDet-Lite0: purpose-built for mobile real-time detection
 // =============================================================================
 
 const TACTICAL_MAP = {
@@ -22,87 +23,101 @@ const TACTICAL_MAP = {
     'scissors':     'EDGED_WEAPON'
 };
 
+const MEDIAPIPE_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
+
 export class Detector {
     constructor() {
-        this._model = null;
+        this._detector = null;
         this._ready = false;
         this._backend = 'unknown';
         this._confThreshold = 0.3;
     }
 
     /**
-     * Initialize COCO-SSD model via TF.js.
-     * Uses lite_mobilenet_v2 for maximum speed on mobile.
+     * Initialize MediaPipe Object Detector.
+     * Dynamically imports the library - no upfront script tag needed.
      */
     async init() {
-        console.log('[DETECTOR] Initializing COCO-SSD (TF.js WebGL)...');
+        console.log('[DETECTOR] Loading MediaPipe Tasks Vision...');
 
         try {
-            // Set WebGL backend for Safari GPU acceleration
-            await tf.setBackend('webgl');
-            await tf.ready();
-            this._backend = tf.getBackend();
-            console.log(`[DETECTOR] TF.js backend: ${this._backend}`);
+            // Dynamically import MediaPipe (no script tag needed)
+            const vision = await import(`${MEDIAPIPE_CDN}/vision_bundle.mjs`);
+            const { ObjectDetector, FilesetResolver } = vision;
 
-            // Load the lightweight model variant for speed
-            this._model = await cocoSsd.load({
-                base: 'lite_mobilenet_v2'
-            });
+            console.log('[DETECTOR] Initializing WASM runtime...');
+            const filesetResolver = await FilesetResolver.forVisionTasks(
+                `${MEDIAPIPE_CDN}/wasm`
+            );
+
+            // Try GPU delegate first, fall back to CPU
+            try {
+                this._detector = await ObjectDetector.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        modelAssetPath: MODEL_URL,
+                        delegate: 'GPU'
+                    },
+                    scoreThreshold: this._confThreshold,
+                    maxResults: 20,
+                    runningMode: 'VIDEO'
+                });
+                this._backend = 'GPU';
+            } catch (gpuErr) {
+                console.warn('[DETECTOR] GPU delegate failed, using CPU:', gpuErr.message);
+                this._detector = await ObjectDetector.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        modelAssetPath: MODEL_URL
+                    },
+                    scoreThreshold: this._confThreshold,
+                    maxResults: 20,
+                    runningMode: 'VIDEO'
+                });
+                this._backend = 'CPU';
+            }
 
             this._ready = true;
-            console.log('[DETECTOR] COCO-SSD loaded successfully');
+            console.log(`[DETECTOR] EfficientDet-Lite0 loaded (${this._backend})`);
             return true;
         } catch (err) {
-            console.error('[DETECTOR] Failed to load:', err.message);
+            console.error('[DETECTOR] Failed to load:', err);
             this._ready = false;
             return false;
         }
     }
 
     /**
-     * Run detection directly on a video element or canvas.
-     * TF.js COCO-SSD handles all preprocessing internally.
-     * No getImageData needed - reads directly from GPU texture.
+     * Run detection on video element.
+     * detectForVideo is SYNCHRONOUS - fastest possible, no async overhead.
      *
-     * @param {HTMLVideoElement|HTMLCanvasElement|ImageData} source
-     * @returns {Promise<Array>}
+     * @param {HTMLVideoElement} video
+     * @returns {Array}
      */
-    async detect(source) {
-        if (!this._ready || !this._model) return [];
+    detect(video) {
+        if (!this._ready || !this._detector) return [];
+        if (!video || video.readyState < 2) return [];
 
         try {
-            // COCO-SSD returns: [{ bbox: [x, y, w, h], class: string, score: number }]
-            const predictions = await this._model.detect(source, 20, this._confThreshold);
+            // Synchronous detection - no await needed
+            const results = this._detector.detectForVideo(video, performance.now());
 
-            return predictions.map(p => ({
-                classId: this._classNameToId(p.class),
-                class: p.class,
-                tacticalClass: TACTICAL_MAP[p.class] || 'OBJECT',
-                score: p.score,
-                bbox: p.bbox  // [x, y, width, height] in pixel coordinates
-            }));
+            if (!results || !results.detections) return [];
+
+            return results.detections.map(d => {
+                const cat = d.categories[0];
+                const bb = d.boundingBox;
+                return {
+                    classId: cat.index,
+                    class: cat.categoryName,
+                    tacticalClass: TACTICAL_MAP[cat.categoryName] || 'OBJECT',
+                    score: cat.score,
+                    bbox: [bb.originX, bb.originY, bb.width, bb.height]
+                };
+            });
         } catch (err) {
-            console.error('[DETECTOR] Inference error:', err);
+            console.error('[DETECTOR] Detection error:', err);
             return [];
         }
-    }
-
-    _classNameToId(name) {
-        const COCO_CLASSES = [
-            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
-            'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
-            'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
-            'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
-            'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
-            'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
-            'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
-            'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
-            'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
-            'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
-            'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
-            'toothbrush'
-        ];
-        return COCO_CLASSES.indexOf(name);
     }
 
     isReady() { return this._ready; }
@@ -115,9 +130,9 @@ export class Detector {
     }
 
     async destroy() {
-        if (this._model) {
-            this._model.dispose?.();
-            this._model = null;
+        if (this._detector) {
+            this._detector.close();
+            this._detector = null;
         }
         this._ready = false;
     }

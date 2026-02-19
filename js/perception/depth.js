@@ -52,6 +52,18 @@ export class DepthEstimator {
     async init() {
         console.log('[DEPTH] Initializing Depth Anything V2 Small...');
 
+        // Lazy-load ONNX Runtime if not already loaded
+        if (typeof ort === 'undefined') {
+            console.log('[DEPTH] Loading ONNX Runtime Web...');
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js';
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
+
         const modelPath = 'https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_quantized.onnx';
         const backends = ['webgpu', 'wasm'];
 

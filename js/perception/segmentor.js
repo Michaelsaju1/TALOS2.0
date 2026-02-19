@@ -53,6 +53,18 @@ export class Segmentor {
     async init() {
         console.log('[SEGMENT] Initializing MobileSAM segmentation...');
 
+        // Lazy-load ONNX Runtime if not already loaded
+        if (typeof ort === 'undefined') {
+            console.log('[SEGMENT] Loading ONNX Runtime Web...');
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js';
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
+
         const encoderPath = 'https://huggingface.co/Acly/MobileSAM/resolve/main/mobile_sam_image_encoder.onnx';
         const decoderPath = 'https://huggingface.co/Acly/MobileSAM/resolve/main/sam_mask_decoder_single.onnx';
 

@@ -154,30 +154,13 @@ async function boot() {
     logBoot('Renderer initialized');
     setBootProgress(30);
 
-    // --- Load Perception Models ---
-    logBoot('LOADING PERCEPTION MODELS...', 'loading');
-
-    // YOLO11n Detector - PRIORITY: load this first, it's the core model
+    // --- Perception Models ---
+    // Detection loaded AFTER HUD is live for instant UI
     state.detector = new Detector();
-    try {
-      logBoot('Loading COCO-SSD (TF.js WebGL)...', 'loading');
-      await state.detector.init();
-      state.modelsLoaded.detector = true;
-      logBoot(`Detection ONLINE (${state.detector.getBackend()})`);
-    } catch (err) {
-      logBoot(`Detection FAILED: ${err.message}`, 'error');
-    }
-    setBootProgress(50);
-
-    // Depth & Segmentation - DEFERRED: load in background AFTER HUD is live
-    // These are heavy models (27MB + 45MB) that would block the boot sequence
     state.depth = new DepthEstimator();
     state.segmentor = new Segmentor();
-    logBoot('Depth + Segmentation DEFERRED (loading in background)');
-    setBootProgress(55);
-
-    // Start background loading of heavy models (non-blocking)
-    loadDeferredModels();
+    logBoot('Detection will load after HUD...');
+    setBootProgress(50);
 
     // ByteTrack Tracker (no model needed)
     state.tracker = new Tracker();
@@ -231,15 +214,17 @@ async function boot() {
     logBoot('ALL SYSTEMS NOMINAL - SUIT ONLINE', 'success');
     logBoot('SELECT MISSION TO DEPLOY...', 'loading');
 
-    // Fade out boot screen
+    // Fade out boot screen FAST - get to camera view immediately
     setTimeout(() => {
       if (bootScreen) bootScreen.classList.add('fade-out');
-      // Show mission panel after boot
       setTimeout(() => {
         if (bootScreen) bootScreen.style.display = 'none';
         missionPanel.show();
-      }, 1000);
-    }, 1500);
+      }, 500);
+    }, 800);
+
+    // Load detection model AFTER HUD is visible (non-blocking)
+    loadDetectionModel();
 
   } catch (err) {
     logBoot(`CRITICAL ERROR: ${err.message}`, 'error');
@@ -423,8 +408,23 @@ function registerOverlays() {
 }
 
 // =============================================================================
-// Deferred Model Loading (background, non-blocking)
+// Model Loading (all deferred - HUD shows first)
 // =============================================================================
+
+async function loadDetectionModel() {
+  try {
+    console.log('[APP] Loading detection model in background...');
+    await state.detector.init();
+    state.modelsLoaded.detector = true;
+    updateModelStatus();
+    console.log('[APP] Detection model ONLINE - starting perception');
+  } catch (err) {
+    console.error('[APP] Detection model failed:', err);
+  }
+
+  // Then load depth/segmentation even later
+  setTimeout(() => loadDeferredModels(), 3000);
+}
 
 async function loadDeferredModels() {
   // Load depth model in background
@@ -488,9 +488,9 @@ async function startPerceptionLoop() {
     state.frameCount++;
 
     try {
-      // --- Detection: pass video element directly to TF.js (no getImageData!) ---
+      // --- Detection: MediaPipe detectForVideo is SYNCHRONOUS (no await!) ---
       if (state.modelsLoaded.detector && state.video?.readyState >= 2) {
-        const rawDetections = await state.detector.detect(state.video);
+        const rawDetections = state.detector.detect(state.video);
 
         // Normalize bboxes to 0-1 range for tracker and overlays
         const vw = state.video.videoWidth || state.video.width || 1;
