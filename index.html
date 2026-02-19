@@ -80,6 +80,12 @@
     </div>
   </div>
 
+  <!-- Geolocation Display (Bottom Right) -->
+  <div id="geo-display">
+    <div id="geo-coords">---, ---</div>
+    <div id="geo-location">ACQUIRING...</div>
+  </div>
+
   <!-- Threat Detail Panel (slides up from bottom) -->
   <div id="threat-panel">
     <div class="threat-header">
@@ -117,8 +123,12 @@
     <div id="boot-log"></div>
   </div>
 
-  <!-- ONNX Runtime Web -->
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+  <!-- TensorFlow.js (fast WebGL detection) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+
+  <!-- ONNX Runtime Web (lazy loaded for depth/segmentation only) -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js" defer></script>
 
   <!-- App Modules -->
   <script type="module" src="js/app.js"></script>

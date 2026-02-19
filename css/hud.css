@@ -399,6 +399,29 @@ html, body {
   text-shadow: 0 0 8px rgba(0, 255, 204, 0.6);
 }
 
+/* Geolocation Display */
+#geo-display {
+  position: fixed;
+  bottom: 36px;
+  right: 8px;
+  z-index: 30;
+  text-align: right;
+  pointer-events: none;
+  font-size: 9px;
+  letter-spacing: 1px;
+  line-height: 1.4;
+  text-shadow: 0 0 6px rgba(0, 255, 204, 0.5);
+  opacity: 0.85;
+}
+#geo-coords {
+  font-size: 10px;
+  font-weight: bold;
+}
+#geo-location {
+  font-size: 8px;
+  opacity: 0.7;
+}
+
 /* Animations */
 @keyframes bootFadeIn {
   from { opacity: 0; transform: translateX(-10px); }

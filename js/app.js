@@ -69,8 +69,8 @@ const state = {
 
   // Frame counters for cadence control
   frameCount: 0,
-  detectionCadence: 3,  // Run detection every N frames (skip frames for speed)
-  depthCadence: 30,     // Run depth every N frames (very expensive)
+  detectionCadence: 1,  // TF.js is fast enough for every frame
+  depthCadence: 60,     // Run depth very infrequently (ONNX is slow)
   intelCadence: 10,     // Run full intel analysis every N frames
 
   // Flags
@@ -160,12 +160,12 @@ async function boot() {
     // YOLO11n Detector - PRIORITY: load this first, it's the core model
     state.detector = new Detector();
     try {
-      logBoot('Loading YOLO11n (~11MB)...', 'loading');
+      logBoot('Loading COCO-SSD (TF.js WebGL)...', 'loading');
       await state.detector.init();
       state.modelsLoaded.detector = true;
-      logBoot('YOLO11n ONLINE');
+      logBoot(`Detection ONLINE (${state.detector.getBackend()})`);
     } catch (err) {
-      logBoot(`YOLO11n FAILED: ${err.message}`, 'error');
+      logBoot(`Detection FAILED: ${err.message}`, 'error');
     }
     setBootProgress(50);
 
@@ -213,6 +213,7 @@ async function boot() {
     logBoot('HUD SYSTEMS...', 'loading');
     initUI();
     initCompass();
+    initGeolocation();
     logBoot('HUD systems ONLINE');
     setBootProgress(90);
 
@@ -456,8 +457,7 @@ async function loadDeferredModels() {
 let perceptionRunning = false;
 
 /**
- * Capture frame from video directly (avoids expensive getImageData from rendered canvas).
- * Uses a small offscreen canvas sized to detection input.
+ * Capture frame for depth/segmentation (ONNX models need ImageData).
  */
 function captureFrame(inputSize) {
   if (!state.video || state.video.readyState < 2) return null;
@@ -478,7 +478,7 @@ async function startPerceptionLoop() {
   const processFrame = async () => {
     if (!perceptionRunning) return;
 
-    // GATE: prevent overlapping frames - if still processing, skip
+    // GATE: prevent overlapping inference
     if (state.perceptionBusy) {
       requestAnimationFrame(processFrame);
       return;
@@ -488,43 +488,43 @@ async function startPerceptionLoop() {
     state.frameCount++;
 
     try {
-      const quality = performanceManager.getQuality();
-      const inputSize = quality === QualityLevel.LOW || quality === QualityLevel.MINIMAL ? 192 : 256;
+      // --- Detection: pass video element directly to TF.js (no getImageData!) ---
+      if (state.modelsLoaded.detector && state.video?.readyState >= 2) {
+        const rawDetections = await state.detector.detect(state.video);
 
-      // --- Detection (skip frames for speed) ---
-      const shouldDetect = state.modelsLoaded.detector &&
-                           state.frameCount % state.detectionCadence === 0;
+        // Normalize bboxes to 0-1 range for tracker and overlays
+        const vw = state.video.videoWidth || state.video.width || 1;
+        const vh = state.video.videoHeight || state.video.height || 1;
+        const normalized = rawDetections.map(d => ({
+          ...d,
+          bbox: [d.bbox[0] / vw, d.bbox[1] / vh, d.bbox[2] / vw, d.bbox[3] / vh]
+        }));
 
-      if (shouldDetect && state.video?.readyState >= 2) {
-        const imageData = captureFrame(inputSize);
-        if (imageData) {
-          const rawDetections = await state.detector.detect(imageData, inputSize);
+        // Track detections
+        const tracked = state.tracker.update(normalized);
 
-          // Track detections
-          const tracked = state.tracker.update(rawDetections);
-
-          // Build enriched detection list
-          state.currentDetections = tracked.map(t => ({
-            id: `TRK-${String(t.id).padStart(4, '0')}`,
-            trackId: t.id,
-            bbox: t.bbox,
-            class: t.className,
-            tacticalClass: mapTacticalClass(t.className),
-            confidence: t.score,
-            classification: 'UNKNOWN',
-            threatLevel: 0,
-            distance: null,
-            movement: {
-              speed: t.velocity ? Math.sqrt(t.velocity[0] ** 2 + t.velocity[1] ** 2) * 30 : 0,
-              heading: getMovementHeading(t.velocity),
-              bearing: t.velocity ? Math.atan2(t.velocity[0], -t.velocity[1]) * 180 / Math.PI : 0
-            },
-            onAvenue: null
-          }));
-        }
+        // Build enriched detection list
+        state.currentDetections = tracked.map(t => ({
+          id: `TRK-${String(t.id).padStart(4, '0')}`,
+          trackId: t.id,
+          bbox: t.bbox,
+          class: t.className,
+          tacticalClass: mapTacticalClass(t.className),
+          confidence: t.score,
+          classification: 'UNKNOWN',
+          threatLevel: 0,
+          distance: null,
+          movement: {
+            speed: t.velocity ? Math.sqrt(t.velocity[0] ** 2 + t.velocity[1] ** 2) * 30 : 0,
+            heading: getMovementHeading(t.velocity),
+            bearing: t.velocity ? Math.atan2(t.velocity[0], -t.velocity[1]) * 180 / Math.PI : 0
+          },
+          onAvenue: null
+        }));
       }
 
-      // --- Depth estimation (very infrequent, only in FULL quality) ---
+      // --- Depth estimation (very infrequent) ---
+      const quality = performanceManager.getQuality();
       if (state.modelsLoaded.depth &&
           state.frameCount % state.depthCadence === 0 &&
           quality === QualityLevel.FULL) {
@@ -538,7 +538,6 @@ async function startPerceptionLoop() {
               state.depthHeight = depthResult.height;
               state.depthFrameId++;
 
-              // Update detection distances
               for (const det of state.currentDetections) {
                 if (det.bbox) {
                   const cx = Math.floor((det.bbox[0] + det.bbox[2] / 2) * state.depthWidth);
@@ -547,33 +546,28 @@ async function startPerceptionLoop() {
                   if (idx >= 0 && idx < state.currentDepthMap.length) {
                     const relDepth = state.currentDepthMap[idx];
                     const meters = relDepth * 200;
-                    det.distance = {
-                      meters,
-                      confidence: 0.6,
-                      zone: meters < 50 ? 'RED' : meters < 150 ? 'AMBER' : 'GREEN'
-                    };
+                    det.distance = { meters, confidence: 0.6,
+                      zone: meters < 50 ? 'RED' : meters < 150 ? 'AMBER' : 'GREEN' };
                   }
                 }
               }
             }
           }
         } catch (err) {
-          console.warn('[APP] Depth estimation error:', err.message);
+          console.warn('[APP] Depth error:', err.message);
         }
       }
 
-      // --- Intelligence Analysis (infrequent) ---
+      // --- Intelligence Analysis ---
       if (state.missionActive && state.frameCount % state.intelCadence === 0) {
         runIntelligenceAnalysis();
       }
 
     } catch (err) {
-      console.error('[APP] Perception frame error:', err);
+      console.error('[APP] Perception error:', err);
     }
 
     state.perceptionBusy = false;
-
-    // Use rAF to sync with display refresh, not setTimeout
     requestAnimationFrame(processFrame);
   };
 
@@ -755,6 +749,66 @@ function initCompass() {
   } else {
     console.warn('[COMPASS] DeviceOrientation API not available');
     headingEl.textContent = 'N/A';
+  }
+}
+
+// =============================================================================
+// Geolocation
+// =============================================================================
+
+let lastGeoLookup = 0;
+
+function initGeolocation() {
+  const coordsEl = document.getElementById('geo-coords');
+  const locationEl = document.getElementById('geo-location');
+  if (!coordsEl || !locationEl) return;
+
+  if (!navigator.geolocation) {
+    coordsEl.textContent = 'NO GPS';
+    locationEl.textContent = 'UNAVAILABLE';
+    return;
+  }
+
+  navigator.geolocation.watchPosition(
+    (pos) => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      coordsEl.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+
+      // Reverse geocode for city/state (rate limited to every 30s)
+      const now = Date.now();
+      if (now - lastGeoLookup > 30000) {
+        lastGeoLookup = now;
+        reverseGeocode(lat, lon, locationEl);
+      }
+    },
+    (err) => {
+      console.warn('[GEO] Error:', err.message);
+      coordsEl.textContent = 'NO SIGNAL';
+      locationEl.textContent = err.code === 1 ? 'DENIED' : 'ERROR';
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+  );
+}
+
+async function reverseGeocode(lat, lon, el) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10`;
+    const resp = await fetch(url, {
+      headers: { 'Accept': 'application/json' }
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const addr = data.address || {};
+    const city = addr.city || addr.town || addr.village || addr.county || '';
+    const state = addr.state || '';
+    if (city && state) {
+      el.textContent = `${city}, ${state}`.toUpperCase();
+    } else if (city || state) {
+      el.textContent = (city || state).toUpperCase();
+    }
+  } catch (err) {
+    console.warn('[GEO] Reverse geocode failed:', err.message);
   }
 }
 
