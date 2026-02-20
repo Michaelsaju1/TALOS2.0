@@ -1,31 +1,26 @@
 // =============================================================================
 // TALOS 2.0 - OSINT Overlay Renderer
-// Renders real-time OSINT data: aircraft tracks, weather panel, camera positions
+// Renders real-time OSINT data on both canvas (directional indicators)
+// and DOM (weather widget, aircraft feed, OSINT panel)
 // =============================================================================
 
-const OSINT_CYAN = '#00ccff';
 const AIRCRAFT_COLOR = '#00ffcc';
 const MILITARY_COLOR = '#ff3333';
 const EMERGENCY_COLOR = '#ffaa00';
-const CAMERA_COLOR = '#ff6600';
-const WEATHER_GREEN = '#00ff66';
-const WEATHER_AMBER = '#ffaa00';
-const WEATHER_RED = '#ff3333';
 
 export class OSINTOverlay {
   constructor() {
     this.osintData = null;
     this.tacticalSummary = null;
     this._visible = true;
-    this._showAircraft = true;
-    this._showCameras = true;
-    this._showWeather = true;
     this._operatorHeading = 0;
+    this._panelVisible = false;
   }
 
   update(osintData, tacticalSummary) {
     this.osintData = osintData;
     this.tacticalSummary = tacticalSummary;
+    this._updateDOM();
   }
 
   setOperatorHeading(heading) {
@@ -37,47 +32,51 @@ export class OSINTOverlay {
     return this._visible;
   }
 
-  isVisible() {
-    return this._visible;
+  togglePanel() {
+    this._panelVisible = !this._panelVisible;
+    const panel = document.getElementById('osint-panel');
+    if (panel) {
+      panel.classList.toggle('visible', this._panelVisible);
+    }
+    if (this._panelVisible) {
+      this._updatePanelContent();
+    }
+    return this._panelVisible;
   }
+
+  hidePanel() {
+    this._panelVisible = false;
+    const panel = document.getElementById('osint-panel');
+    if (panel) panel.classList.remove('visible');
+  }
+
+  isPanelVisible() {
+    return this._panelVisible;
+  }
+
+  // ===========================================================================
+  // Canvas Rendering - Aircraft directional arrows on screen edges
+  // ===========================================================================
 
   render(ctx, w, h, timestamp) {
     if (!this._visible || !this.osintData) return;
     ctx.save();
-
-    if (this._showAircraft) {
-      this._renderAircraftTracks(ctx, w, h, timestamp);
-    }
-    if (this._showCameras) {
-      this._renderCameraIndicators(ctx, w, h, timestamp);
-    }
-    if (this._showWeather) {
-      this._renderWeatherPanel(ctx, w, h);
-    }
-
-    this._renderOSINTStatusBadge(ctx, w, h);
-
+    this._renderAircraftArrows(ctx, w, h, timestamp);
     ctx.restore();
   }
 
-  // ---------------------------------------------------------------------------
-  // Aircraft Tracks - Edge-of-screen bearing indicators
-  // ---------------------------------------------------------------------------
-  _renderAircraftTracks(ctx, w, h, timestamp) {
+  _renderAircraftArrows(ctx, w, h, timestamp) {
     const aircraft = this.osintData.aircraft;
     if (!aircraft || aircraft.status !== 'ACTIVE' || !aircraft.entries.length) return;
 
-    // Show up to 8 nearest aircraft as edge indicators
-    const maxShow = 8;
+    const maxShow = 10;
     const entries = aircraft.entries.slice(0, maxShow);
 
-    for (let i = 0; i < entries.length; i++) {
-      const ac = entries[i];
-      if (ac.bearing === null || ac.distance === null) continue;
+    for (const ac of entries) {
+      if (ac.bearing == null || ac.distance == null) continue;
 
-      // Calculate screen-edge position based on bearing relative to operator heading
       const relativeBearing = ((ac.bearing - this._operatorHeading) + 360) % 360;
-      const pos = this._bearingToEdge(relativeBearing, w, h, 40);
+      const pos = this._bearingToEdge(relativeBearing, w, h);
 
       const isMilitary = ac.category === 'MILITARY' || ac.category === 'POSSIBLE_MIL';
       const isEmergency = ac.category === 'EMERGENCY' || ac.category === 'HIJACK' || ac.category === 'COMMS_FAILURE';
@@ -87,79 +86,80 @@ export class OSINTOverlay {
 
       // Pulsing for military/emergency
       if (isMilitary || isEmergency) {
-        ctx.globalAlpha = 0.6 + 0.3 * Math.sin(timestamp / 300);
+        ctx.globalAlpha = 0.7 + 0.3 * Math.sin(timestamp / 300);
       } else {
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = 0.65;
       }
 
-      // Aircraft direction arrow
-      this._drawAircraftArrow(ctx, pos.x, pos.y, pos.angle, color);
+      // Arrow pointing inward
+      this._drawArrow(ctx, pos.x, pos.y, pos.angle, color, isMilitary || isEmergency ? 10 : 8);
 
-      // Info label
-      ctx.globalAlpha = 0.75;
-      ctx.font = "8px 'Courier New', monospace";
-      ctx.fillStyle = color;
-      ctx.textAlign = pos.textAlign;
-
-      const callsign = ac.callsign !== 'UNKNOWN' ? ac.callsign : ac.icao24;
-      const altStr = ac.altitudeFt ? `${(ac.altitudeFt / 1000).toFixed(1)}K` : '---';
+      // Dark background behind label
+      ctx.globalAlpha = 0.85;
+      const callsign = ac.callsign !== 'NO CALL' ? ac.callsign : ac.icao24?.toUpperCase();
       const distStr = ac.distance < 1 ? `${(ac.distance * 1000).toFixed(0)}m` : `${ac.distance.toFixed(1)}km`;
+      const altStr = ac.altitudeFt != null ? `${(ac.altitudeFt / 1000).toFixed(1)}K` : '---';
+      const label1 = callsign || '???';
+      const label2 = `${altStr}ft ${distStr}`;
 
-      const labelX = pos.labelX;
-      const labelY = pos.labelY;
+      ctx.font = "bold 9px 'Courier New', monospace";
+      const tw1 = ctx.measureText(label1).width;
+      ctx.font = "8px 'Courier New', monospace";
+      const tw2 = ctx.measureText(label2).width;
+      const maxTw = Math.max(tw1, tw2);
 
-      ctx.fillText(callsign, labelX, labelY);
-      ctx.fillText(`${altStr}ft ${distStr}`, labelX, labelY + 10);
+      const lx = pos.labelX;
+      const ly = pos.labelY;
+      const isRight = pos.textAlign === 'right';
+      const bgX = isRight ? lx - maxTw - 4 : lx - 2;
 
-      // Category badge for military/emergency
+      // Background
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+      ctx.fillRect(bgX, ly - 10, maxTw + 6, 24);
+
+      // Left border accent
+      ctx.fillStyle = color;
+      ctx.fillRect(bgX, ly - 10, 2, 24);
+
+      // Text
+      ctx.textAlign = pos.textAlign;
+      ctx.font = "bold 9px 'Courier New', monospace";
+      ctx.fillStyle = color;
+      ctx.fillText(label1, lx, ly);
+
+      ctx.font = "8px 'Courier New', monospace";
+      ctx.fillStyle = '#aaaaaa';
+      ctx.fillText(label2, lx, ly + 11);
+
+      // MIL badge
       if (isMilitary || isEmergency) {
-        const badge = isMilitary ? 'MIL' : ac.category;
-        ctx.fillStyle = 'rgba(0,0,0,0.7)';
-        const badgeW = ctx.measureText(badge).width + 6;
-        ctx.fillRect(labelX - (pos.textAlign === 'right' ? badgeW : 0), labelY + 12, badgeW, 11);
-        ctx.fillStyle = color;
+        const badge = isMilitary ? 'MIL' : 'EMRG';
         ctx.font = "bold 7px 'Courier New', monospace";
-        ctx.fillText(badge, labelX, labelY + 21);
+        const bw = ctx.measureText(badge).width + 4;
+        const bx = isRight ? lx - bw : lx;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.9;
+        ctx.fillRect(bx, ly + 14, bw, 10);
+        ctx.fillStyle = '#000000';
+        ctx.textAlign = 'left';
+        ctx.fillText(badge, bx + 2, ly + 22);
       }
 
-      ctx.restore();
-    }
-
-    // Aircraft count indicator in top area
-    if (entries.length > 0) {
-      ctx.save();
-      ctx.globalAlpha = 0.6;
-      ctx.font = "8px 'Courier New', monospace";
-      ctx.fillStyle = AIRCRAFT_COLOR;
-      ctx.textAlign = 'left';
-      const milCount = entries.filter(a => a.category === 'MILITARY' || a.category === 'POSSIBLE_MIL').length;
-      const label = milCount > 0
-        ? `AIR: ${entries.length} TRK (${milCount} MIL)`
-        : `AIR: ${entries.length} TRK`;
-      ctx.fillText(label, 20, h - 46);
       ctx.restore();
     }
   }
 
-  _bearingToEdge(bearing, w, h, margin) {
-    // Convert bearing (0=ahead/top, 90=right, 180=behind/bottom, 270=left)
-    // to a position on the screen edge
+  _bearingToEdge(bearing, w, h) {
     const rad = (bearing - 90) * Math.PI / 180;
-    const cx = w / 2;
-    const cy = h / 2;
-
-    // Project to edge
     const cosA = Math.cos(rad);
     const sinA = Math.sin(rad);
 
-    // Find intersection with screen edges (inset by margin)
+    const margin = 24;
     const left = margin;
     const right = w - margin;
-    const top = margin + 60; // Below top bar
-    const bottom = h - margin - 50; // Above bottom bar
+    const top = margin + 76; // Below top bar + compass
+    const bottom = h - margin - 60; // Above bottom bar
 
-    let x, y;
-    // Check which edge we hit first
     const halfW = (right - left) / 2;
     const halfH = (bottom - top) / 2;
     const ecx = (left + right) / 2;
@@ -169,204 +169,215 @@ export class OSINTOverlay {
     const scaleY = sinA !== 0 ? Math.abs(halfH / sinA) : Infinity;
     const scale = Math.min(scaleX, scaleY);
 
-    x = ecx + cosA * scale;
-    y = ecy + sinA * scale;
+    let x = Math.max(left, Math.min(right, ecx + cosA * scale));
+    let y = Math.max(top, Math.min(bottom, ecy + sinA * scale));
 
-    // Clamp
-    x = Math.max(left, Math.min(right, x));
-    y = Math.max(top, Math.min(bottom, y));
+    let textAlign = 'left';
+    let labelX = x + 14;
+    let labelY = y - 2;
 
-    // Determine text alignment based on which side
-    let textAlign = 'center';
-    let labelX = x;
-    let labelY = y;
-
-    if (x <= left + 5) {
-      textAlign = 'left';
-      labelX = x + 14;
-      labelY = y - 4;
-    } else if (x >= right - 5) {
+    if (x >= right - 5) {
       textAlign = 'right';
       labelX = x - 14;
-      labelY = y - 4;
     } else if (y <= top + 5) {
-      labelY = y + 16;
-    } else {
-      labelY = y - 14;
+      labelY = y + 18;
+    } else if (y >= bottom - 5) {
+      labelY = y - 16;
     }
 
     return { x, y, angle: rad, textAlign, labelX, labelY };
   }
 
-  _drawAircraftArrow(ctx, x, y, angle, color) {
+  _drawArrow(ctx, x, y, angle, color, size) {
     ctx.save();
     ctx.translate(x, y);
-    ctx.rotate(angle + Math.PI); // Point inward toward center
+    ctx.rotate(angle + Math.PI);
 
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.moveTo(0, -6);
-    ctx.lineTo(-4, 6);
-    ctx.lineTo(0, 3);
-    ctx.lineTo(4, 6);
+    ctx.moveTo(0, -size);
+    ctx.lineTo(-size * 0.6, size * 0.6);
+    ctx.lineTo(0, size * 0.2);
+    ctx.lineTo(size * 0.6, size * 0.6);
     ctx.closePath();
     ctx.fill();
 
     ctx.restore();
   }
 
-  // ---------------------------------------------------------------------------
-  // Camera Position Indicators
-  // ---------------------------------------------------------------------------
-  _renderCameraIndicators(ctx, w, h, timestamp) {
-    const cameras = this.osintData.cameras;
-    if (!cameras || cameras.status !== 'ACTIVE' || !cameras.entries.length) return;
+  // ===========================================================================
+  // DOM Updates - Weather widget, aircraft feed, OSINT status
+  // ===========================================================================
 
-    // Show up to 6 nearest cameras
-    const maxShow = 6;
-    const entries = cameras.entries.slice(0, maxShow);
-
-    for (const cam of entries) {
-      if (cam.bearing === undefined) continue;
-
-      const relativeBearing = ((cam.bearing - this._operatorHeading) + 360) % 360;
-
-      // Place cameras as small icons inside the screen (not edge - they're closer)
-      const distScale = Math.min(1, cam.distance / 2); // Normalize distance (max 2km)
-      const maxR = Math.min(w, h) * 0.35;
-      const r = 60 + distScale * maxR;
-
-      const rad = (relativeBearing - 90) * Math.PI / 180;
-      const cx = w / 2 + Math.cos(rad) * r;
-      const cy = h / 2 + Math.sin(rad) * r;
-
-      // Clamp to viewable area
-      const px = Math.max(30, Math.min(w - 30, cx));
-      const py = Math.max(80, Math.min(h - 60, cy));
-
-      ctx.save();
-      ctx.globalAlpha = 0.35;
-
-      // Camera icon (small eye/lens)
-      ctx.strokeStyle = CAMERA_COLOR;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(px, py, 5, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(px, py, 2, 0, Math.PI * 2);
-      ctx.fillStyle = CAMERA_COLOR;
-      ctx.fill();
-
-      // Label
-      ctx.font = "7px 'Courier New', monospace";
-      ctx.textAlign = 'center';
-      ctx.fillStyle = CAMERA_COLOR;
-      ctx.globalAlpha = 0.3;
-      ctx.fillText(`${(cam.distance * 1000).toFixed(0)}m`, px, py + 12);
-
-      ctx.restore();
+  _updateDOM() {
+    this._updateWeatherWidget();
+    this._updateAircraftWidget();
+    this._updateOSINTStatus();
+    if (this._panelVisible) {
+      this._updatePanelContent();
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Weather Panel - Compact tactical weather display
-  // ---------------------------------------------------------------------------
-  _renderWeatherPanel(ctx, w, h) {
-    const weather = this.osintData.weather;
-    if (!weather || weather.status !== 'ACTIVE' || !weather.current) return;
+  _updateWeatherWidget() {
+    const el = document.getElementById('osint-weather');
+    if (!el || !this.osintData?.weather?.current) {
+      if (el) el.style.display = 'none';
+      return;
+    }
 
-    const wx = weather.current;
-    const panelX = 16;
-    const panelY = h - 160;
-    const panelW = 110;
-    const panelH = 85;
+    el.style.display = 'block';
+    const wx = this.osintData.weather.current;
 
-    ctx.save();
+    const impactColor = wx.tacticalImpact === 'SEVERE' ? 'var(--hud-hostile)' :
+                        wx.tacticalImpact === 'SIGNIFICANT' ? 'var(--hud-caution)' :
+                        wx.tacticalImpact === 'MODERATE' ? 'var(--hud-caution)' : 'var(--hud-primary)';
 
-    // Panel background
-    ctx.globalAlpha = 0.6;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillRect(panelX, panelY, panelW, panelH);
+    const droneColor = wx.droneOps === 'RED' ? 'var(--hud-hostile)' :
+                       wx.droneOps === 'AMBER' ? 'var(--hud-caution)' : 'var(--hud-primary)';
 
-    // Border
-    ctx.strokeStyle = 'rgba(0, 204, 255, 0.3)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(panelX, panelY, panelW, panelH);
+    const windDir = wx.windDirection != null ? this._degreesToCardinal(wx.windDirection) : '--';
 
-    ctx.globalAlpha = 0.85;
-    const tx = panelX + 6;
-    let ty = panelY + 12;
-
-    // Header
-    ctx.font = "bold 8px 'Courier New', monospace";
-    ctx.fillStyle = OSINT_CYAN;
-    ctx.textAlign = 'left';
-    ctx.fillText('WX', tx, ty);
-
-    // Tactical impact color
-    const impactColor = wx.tacticalImpact === 'SEVERE' ? WEATHER_RED :
-                        wx.tacticalImpact === 'SIGNIFICANT' ? WEATHER_AMBER :
-                        wx.tacticalImpact === 'MODERATE' ? WEATHER_AMBER : WEATHER_GREEN;
-    ctx.fillStyle = impactColor;
-    ctx.textAlign = 'right';
-    ctx.fillText(wx.tacticalImpact, panelX + panelW - 6, ty);
-
-    // Weather data
-    ctx.textAlign = 'left';
-    ctx.font = "8px 'Courier New', monospace";
-    ty += 13;
-
-    ctx.fillStyle = '#cccccc';
-    ctx.fillText(wx.weatherDesc || '---', tx, ty);
-    ty += 11;
-
-    ctx.fillStyle = OSINT_CYAN;
-    ctx.fillText(`${wx.temperature !== null ? wx.temperature + '\u00B0F' : '---'}  ${wx.humidity || '--'}%`, tx, ty);
-    ty += 11;
-
-    // Wind
-    const windDir = wx.windDirection !== null ? this._degreesToCardinal(wx.windDirection) : '--';
-    ctx.fillText(`WND ${windDir} ${wx.windSpeed || '--'}mph`, tx, ty);
-    ty += 11;
-
-    // Visibility
-    ctx.fillText(`VIS ${wx.visibilityKm || '--'}km`, tx, ty);
-    ty += 11;
-
-    // Drone ops status
-    const droneOpsColor = wx.droneOps === 'RED' ? WEATHER_RED :
-                          wx.droneOps === 'AMBER' ? WEATHER_AMBER : WEATHER_GREEN;
-    ctx.fillStyle = droneOpsColor;
-    ctx.fillText(`DRONE: ${wx.droneOps}`, tx, ty);
-
-    ctx.restore();
+    el.innerHTML = `
+      <div class="osint-wx-header">WX <span style="color:${impactColor}">${wx.tacticalImpact}</span></div>
+      <div class="osint-wx-condition">${wx.weatherDesc}</div>
+      <div>${wx.temperature != null ? Math.round(wx.temperature) + '°F' : '--'} | ${wx.humidity || '--'}% | ${wx.cloudCover || '--'}%</div>
+      <div>WND ${windDir} ${wx.windSpeed || '--'}mph G${wx.windGusts || '--'}</div>
+      <div>VIS ${wx.visibilityMi || '--'}mi | ${wx.ceiling || '--'}</div>
+      <div>DRONE OPS: <span style="color:${droneColor};font-weight:bold">${wx.droneOps}</span></div>
+    `;
   }
 
-  // ---------------------------------------------------------------------------
-  // OSINT Status Badge
-  // ---------------------------------------------------------------------------
-  _renderOSINTStatusBadge(ctx, w, h) {
+  _updateAircraftWidget() {
+    const el = document.getElementById('osint-aircraft');
+    if (!el) return;
+
+    const ac = this.osintData?.aircraft;
+    if (!ac || ac.status !== 'ACTIVE' || ac.count === 0) {
+      el.style.display = 'none';
+      return;
+    }
+
+    el.style.display = 'block';
+    const milCount = ac.entries.filter(a => a.category === 'MILITARY').length;
+    const top3 = ac.entries.slice(0, 3);
+
+    let html = `<div class="osint-ac-header">AIR ${ac.count} TRK${milCount > 0 ? ` <span style="color:var(--hud-hostile)">${milCount} MIL</span>` : ''}</div>`;
+
+    for (const a of top3) {
+      const isMil = a.category === 'MILITARY' || a.category === 'POSSIBLE_MIL';
+      const isEmrg = a.category === 'EMERGENCY' || a.category === 'HIJACK';
+      const color = isEmrg ? 'var(--hud-caution)' : isMil ? 'var(--hud-hostile)' : 'var(--hud-primary)';
+      const dist = a.distance < 1 ? `${(a.distance * 1000).toFixed(0)}m` : `${a.distance.toFixed(1)}km`;
+      const alt = a.altitudeFt != null ? `${(a.altitudeFt / 1000).toFixed(1)}K` : '---';
+      const cs = a.callsign !== 'NO CALL' ? a.callsign : a.icao24?.toUpperCase() || '???';
+      const brg = a.bearing != null ? `${String(a.bearing).padStart(3, '0')}°` : '---';
+
+      html += `<div class="osint-ac-entry" style="border-left-color:${color}">
+        <span style="color:${color}">${cs}</span>
+        <span>${brg} ${dist} ${alt}ft ${a.trend === 'CLIMBING' ? '\u2191' : a.trend === 'DESCENDING' ? '\u2193' : '\u2192'}</span>
+      </div>`;
+    }
+
+    if (ac.count > 3) {
+      html += `<div style="opacity:0.5;font-size:8px;margin-top:2px">+${ac.count - 3} MORE</div>`;
+    }
+
+    el.innerHTML = html;
+  }
+
+  _updateOSINTStatus() {
+    const dot = document.getElementById('osint-dot');
+    const statusEl = document.getElementById('osint-feed-count');
     if (!this.tacticalSummary) return;
 
     const ts = this.tacticalSummary;
-    const badgeX = 20;
-    const badgeY = h - 32;
-
-    ctx.save();
-    ctx.globalAlpha = 0.6;
-    ctx.font = "8px 'Courier New', monospace";
-    ctx.fillStyle = OSINT_CYAN;
-    ctx.textAlign = 'left';
-
-    ctx.fillText(`OSINT ${ts.feedsActive}/${ts.feedsTotal} | CAM ${ts.nearbyCameras}`, badgeX, badgeY);
-
-    ctx.restore();
+    if (dot) {
+      dot.className = ts.feedsActive > 0 ? 'status-dot green' : 'status-dot amber';
+    }
+    if (statusEl) {
+      statusEl.textContent = `${ts.feedsActive}/${ts.feedsTotal}`;
+    }
   }
 
-  // ---------------------------------------------------------------------------
+  // ===========================================================================
+  // Full OSINT Panel (slide-up detail view)
+  // ===========================================================================
+
+  _updatePanelContent() {
+    const content = document.getElementById('osint-panel-content');
+    if (!content || !this.osintData) return;
+
+    let html = '';
+
+    // Weather section
+    const wx = this.osintData.weather?.current;
+    if (wx) {
+      const windDir = wx.windDirection != null ? this._degreesToCardinal(wx.windDirection) : '--';
+      html += `
+        <div class="osint-section">
+          <div class="osint-section-title">WEATHER (Open-Meteo)</div>
+          <div class="osint-row"><span>Conditions</span><span>${wx.weatherDesc}</span></div>
+          <div class="osint-row"><span>Temperature</span><span>${Math.round(wx.temperature || 0)}°F (Feels ${Math.round(wx.feelsLike || 0)}°F)</span></div>
+          <div class="osint-row"><span>Wind</span><span>${windDir} ${wx.windSpeed || '--'}mph Gusts ${wx.windGusts || '--'}mph</span></div>
+          <div class="osint-row"><span>Visibility</span><span>${wx.visibilityMi || '--'}mi</span></div>
+          <div class="osint-row"><span>Cloud Cover</span><span>${wx.cloudCover || '--'}% (${wx.ceiling})</span></div>
+          <div class="osint-row"><span>Humidity</span><span>${wx.humidity || '--'}%</span></div>
+          <div class="osint-row"><span>Pressure</span><span>${wx.pressureInHg || '--'} inHg</span></div>
+          <div class="osint-row"><span>Tactical Impact</span><span style="color:${wx.tacticalImpact === 'SEVERE' ? 'var(--hud-hostile)' : wx.tacticalImpact !== 'MINIMAL' ? 'var(--hud-caution)' : 'var(--hud-primary)'}">${wx.tacticalImpact}</span></div>
+          <div class="osint-row"><span>Drone Ops</span><span style="color:${wx.droneOps === 'RED' ? 'var(--hud-hostile)' : wx.droneOps === 'AMBER' ? 'var(--hud-caution)' : 'var(--hud-primary)'}">${wx.droneOps}</span></div>
+          <div class="osint-row"><span>Light</span><span>${wx.isDay ? 'DAY' : 'NIGHT'}</span></div>
+        </div>
+      `;
+    }
+
+    // Aircraft section
+    const ac = this.osintData.aircraft;
+    if (ac && ac.entries.length > 0) {
+      html += `
+        <div class="osint-section">
+          <div class="osint-section-title">AIRCRAFT (OpenSky ADS-B) - ${ac.count} TRACKED</div>
+      `;
+      for (const a of ac.entries.slice(0, 15)) {
+        const isMil = a.category === 'MILITARY' || a.category === 'POSSIBLE_MIL';
+        const isEmrg = a.category === 'EMERGENCY' || a.category === 'HIJACK';
+        const catColor = isEmrg ? 'var(--hud-caution)' : isMil ? 'var(--hud-hostile)' : 'var(--hud-primary)';
+        const dist = a.distance < 1 ? `${(a.distance * 1000).toFixed(0)}m` : `${a.distance.toFixed(1)}km`;
+        const brg = a.bearing != null ? `${String(a.bearing).padStart(3, '0')}°` : '---';
+        const spd = a.velocity != null ? `${a.velocity}km/h` : '---';
+        html += `
+          <div class="osint-ac-detail" style="border-left-color:${catColor}">
+            <div><span style="color:${catColor};font-weight:bold">${a.callsign}</span> <span style="opacity:0.5">${a.icao24}</span> <span style="opacity:0.6">${a.country}</span></div>
+            <div>BRG ${brg} | DST ${dist} | ALT ${a.altitudeFt != null ? a.altitudeFt.toLocaleString() + 'ft' : '---'} ${a.trend}</div>
+            <div>SPD ${spd} | HDG ${a.heading != null ? a.heading + '°' : '---'} | SQK ${a.squawk || '----'}</div>
+          </div>
+        `;
+      }
+      html += '</div>';
+    }
+
+    // Feed status section
+    const statuses = this.tacticalSummary?.feedStatuses;
+    if (statuses) {
+      html += `
+        <div class="osint-section">
+          <div class="osint-section-title">FEED STATUS</div>
+          ${Object.entries(statuses).map(([name, status]) => {
+            const color = status === 'ACTIVE' ? 'var(--hud-primary)' :
+                          status === 'ERROR' || status === 'RATE_LIMITED' ? 'var(--hud-hostile)' :
+                          status === 'NO_KEY' ? 'var(--hud-caution)' : '#666';
+            return `<div class="osint-row"><span>${name.toUpperCase()}</span><span style="color:${color}">${status}</span></div>`;
+          }).join('')}
+        </div>
+      `;
+    }
+
+    content.innerHTML = html;
+  }
+
+  // ===========================================================================
   // Utility
-  // ---------------------------------------------------------------------------
+  // ===========================================================================
+
   _degreesToCardinal(deg) {
     const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
     return dirs[Math.round(deg / 45) % 8];

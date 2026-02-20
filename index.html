@@ -81,10 +81,28 @@
     </div>
   </div>
 
+  <!-- OSINT Weather Widget (Left Side) -->
+  <div id="osint-weather"></div>
+
+  <!-- OSINT Aircraft Widget (Left Side, below weather) -->
+  <div id="osint-aircraft"></div>
+
+  <!-- OSINT Panel Toggle (Left Side) -->
+  <div id="osint-toggle">OSINT <span id="osint-feed-count">0/5</span></div>
+
   <!-- Geolocation Display (Bottom Right) -->
   <div id="geo-display">
     <div id="geo-coords">---, ---</div>
     <div id="geo-location">ACQUIRING...</div>
+  </div>
+
+  <!-- OSINT Detail Panel (slides up from bottom) -->
+  <div id="osint-panel">
+    <div class="osint-panel-header">
+      <span>OPEN SOURCE INTELLIGENCE</span>
+      <span id="osint-panel-close" style="cursor:pointer;opacity:0.6">[X]</span>
+    </div>
+    <div id="osint-panel-content"></div>
   </div>
 
   <!-- Threat Detail Panel (slides up from bottom) -->

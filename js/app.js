@@ -845,14 +845,23 @@ function initOSINT() {
   osintFeeds.onUpdate((data) => {
     const summary = osintFeeds.getTacticalSummary();
     osintOverlay.update(data, summary);
-
-    // Update OSINT status dot in bottom bar
-    const dot = document.getElementById('osint-dot');
-    if (dot) {
-      const active = summary.feedsActive;
-      dot.className = active > 0 ? 'status-dot green' : 'status-dot amber';
-    }
   });
+
+  // OSINT toggle button
+  const toggleBtn = document.getElementById('osint-toggle');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      osintOverlay.togglePanel();
+    });
+  }
+
+  // OSINT panel close button
+  const closeBtn = document.getElementById('osint-panel-close');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      osintOverlay.hidePanel();
+    });
+  }
 
   // Start feeds (they'll wait for GPS position before first fetch)
   osintFeeds.start();
