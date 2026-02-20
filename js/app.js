@@ -967,7 +967,8 @@ function initSpeech() {
     transcriptEl.classList.toggle('final', isFinal);
   });
 
-  // Push-to-talk button
+  // Push-to-talk button - use click only (works on mobile, doesn't block
+  // iOS permission dialogs like touchstart with preventDefault does)
   if (voiceBtn) {
     voiceBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -979,23 +980,6 @@ function initSpeech() {
         speechEngine.startListening();
       }
     });
-
-    // Also handle touchstart/touchend for press-and-hold
-    voiceBtn.addEventListener('touchstart', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (speechEngine.isSpeaking()) {
-        speechEngine.stopSpeaking();
-        return;
-      }
-      speechEngine.startListening();
-    }, { passive: false });
-
-    voiceBtn.addEventListener('touchend', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      // Let recognition finish naturally - it stops when user stops speaking
-    }, { passive: false });
   }
 }
 

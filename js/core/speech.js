@@ -64,10 +64,20 @@ export class SpeechEngine {
     // Check for Speech Recognition support
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      console.warn('[SPEECH] SpeechRecognition not available');
+      console.warn('[SPEECH] SpeechRecognition not available in this browser');
+      // Still mark available if TTS works (can do speech output even without input)
+      if (this._synthesis) {
+        this._available = true;
+        this._ttsOnly = true;
+        console.log('[SPEECH] TTS-only mode (no recognition)');
+      }
+      this._selectVoice();
+      if (this._synthesis) this._synthesis.onvoiceschanged = () => this._selectVoice();
       return;
     }
 
+    this._ttsOnly = false;
+    this._micPermissionGranted = false;
     this._recognition = new SpeechRecognition();
     this._recognition.continuous = false;     // Single utterance per push-to-talk
     this._recognition.interimResults = true;  // Show partial results for responsiveness
@@ -78,8 +88,12 @@ export class SpeechEngine {
     this._recognition.onerror = (e) => this._handleError(e);
     this._recognition.onend = () => this._handleEnd();
     this._recognition.onstart = () => {
+      console.log('[SPEECH] Recognition started - microphone active');
       this._listening = true;
       this._notifyStatus('listening');
+    };
+    this._recognition.onaudiostart = () => {
+      console.log('[SPEECH] Audio capture started');
     };
 
     this._available = true;
@@ -92,7 +106,7 @@ export class SpeechEngine {
       this._synthesis.onvoiceschanged = () => this._selectVoice();
     }
 
-    console.log('[SPEECH] Speech engine initialized');
+    console.log('[SPEECH] Speech engine initialized (STT + TTS)');
   }
 
   _selectVoice() {
@@ -145,10 +159,15 @@ export class SpeechEngine {
    * Start listening for voice command (push-to-talk).
    * Must be called from user gesture (tap/click) on iOS.
    */
-  startListening() {
-    if (!this._available || this._listening) return;
+  async startListening() {
+    if (!this._available || this._listening || this._ttsOnly) {
+      if (this._ttsOnly) {
+        this.speak('Voice recognition not available on this device.');
+      }
+      return;
+    }
 
-    // Unlock TTS on first user gesture
+    // Unlock TTS on first user gesture (iOS requires this)
     if (!this._gestureUnlocked && this._synthesis) {
       const unlock = new SpeechSynthesisUtterance('');
       unlock.volume = 0;
@@ -156,12 +175,32 @@ export class SpeechEngine {
       this._gestureUnlocked = true;
     }
 
+    // On first use, explicitly request microphone permission via getUserMedia
+    // This ensures the browser shows the permission dialog properly on iOS
+    if (!this._micPermissionGranted) {
+      try {
+        console.log('[SPEECH] Requesting microphone permission...');
+        this._notifyStatus('processing');
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Permission granted - stop the stream immediately (SpeechRecognition manages its own)
+        stream.getTracks().forEach(t => t.stop());
+        this._micPermissionGranted = true;
+        console.log('[SPEECH] Microphone permission granted');
+      } catch (err) {
+        console.error('[SPEECH] Microphone permission denied:', err.message);
+        this._notifyStatus('denied');
+        this.speak('Microphone access denied. Please allow microphone permission.');
+        return;
+      }
+    }
+
     try {
       this._recognition.start();
-      console.log('[SPEECH] Listening started');
+      console.log('[SPEECH] Recognition starting...');
     } catch (e) {
       console.warn('[SPEECH] Start failed:', e.message);
-      // May already be listening
+      this._listening = false;
+      this._notifyStatus('idle');
     }
   }
 
@@ -260,15 +299,36 @@ export class SpeechEngine {
   }
 
   _handleError(event) {
-    console.warn('[SPEECH] Recognition error:', event.error);
+    console.warn('[SPEECH] Recognition error:', event.error, event.message || '');
     this._listening = false;
 
-    if (event.error === 'not-allowed') {
-      this._notifyStatus('denied');
-    } else if (event.error === 'no-speech') {
-      this._notifyStatus('idle');
-    } else {
-      this._notifyStatus('error');
+    switch (event.error) {
+      case 'not-allowed':
+        this._micPermissionGranted = false;
+        this._notifyStatus('denied');
+        console.error('[SPEECH] Microphone permission denied by user or browser');
+        break;
+      case 'no-speech':
+        // User didn't say anything - not really an error
+        this._notifyStatus('idle');
+        break;
+      case 'audio-capture':
+        // Microphone not available
+        this._notifyStatus('error');
+        console.error('[SPEECH] Microphone not available - may be in use');
+        break;
+      case 'network':
+        // Some browsers need network for speech recognition
+        this._notifyStatus('error');
+        console.error('[SPEECH] Network error - speech recognition may require connectivity');
+        break;
+      case 'aborted':
+        // Recognition was aborted - normal when we call stop()
+        this._notifyStatus('idle');
+        break;
+      default:
+        this._notifyStatus('error');
+        break;
     }
   }
 
