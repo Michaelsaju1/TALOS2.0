@@ -241,12 +241,18 @@ export class OSINTOverlay {
   _updateWeatherWidget() {
     if (!this._elWeather) this._elWeather = document.getElementById('osint-weather');
     const el = this._elWeather;
-    if (!el || !this.osintData?.weather?.current) {
-      if (el) el.style.display = 'none';
+    if (!el) return;
+
+    if (!this.osintData?.weather?.current) {
+      // Show waiting/error state instead of hiding
+      const wxStatus = this.osintData?.weather?.status || 'STANDBY';
+      const wxError = this.osintData?.weather?.error || '';
+      el.innerHTML = `
+        <div class="osint-wx-header">WX <span style="color:var(--hud-caution)">${wxStatus}</span></div>
+        <div style="opacity:0.5">${wxError || 'AWAITING GPS...'}</div>
+      `;
       return;
     }
-
-    el.style.display = 'block';
     const wx = this.osintData.weather.current;
 
     const impactColor = wx.tacticalImpact === 'SEVERE' ? 'var(--hud-hostile)' :
@@ -275,11 +281,15 @@ export class OSINTOverlay {
 
     const ac = this.osintData?.aircraft;
     if (!ac || ac.status !== 'ACTIVE' || ac.count === 0) {
-      el.style.display = 'none';
+      // Show waiting/error state
+      const acStatus = ac?.status || 'STANDBY';
+      const acError = ac?.error || '';
+      el.innerHTML = `
+        <div class="osint-ac-header">AIR <span style="opacity:0.5">${acStatus}</span></div>
+        <div style="opacity:0.5">${acError || (acStatus === 'RATE_LIMITED' ? 'RATE LIMITED - RETRY 15s' : 'AWAITING GPS...')}</div>
+      `;
       return;
     }
-
-    el.style.display = 'block';
     const milCount = ac.entries.filter(a => a.category === 'MILITARY').length;
     const top3 = ac.entries.slice(0, 3);
 
@@ -386,7 +396,18 @@ export class OSINTOverlay {
   _updatePanelContent() {
     if (!this._elPanelContent) this._elPanelContent = document.getElementById('osint-panel-content');
     const content = this._elPanelContent;
-    if (!content || !this.osintData) return;
+    if (!content) return;
+
+    // Show status even when no data
+    if (!this.osintData) {
+      content.innerHTML = `
+        <div class="osint-section">
+          <div class="osint-section-title">STATUS</div>
+          <div style="color:var(--hud-caution);padding:10px 0;">OSINT feeds initializing... Awaiting GPS position.</div>
+        </div>
+      `;
+      return;
+    }
 
     let html = '';
 

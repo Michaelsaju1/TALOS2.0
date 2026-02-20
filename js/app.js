@@ -36,6 +36,9 @@ import { suitStatus } from './suit/suit-status.js';
 // --- OSINT ---
 import { osintFeeds } from './intel/osint-feeds.js';
 
+// --- Speech ---
+import { speechEngine } from './core/speech.js';
+
 // --- UI ---
 import { renderHudElements, renderDetectionBoxes } from './ui/hud-elements.js';
 import { renderDepthOverlay } from './ui/hud-overlays.js';
@@ -207,7 +210,13 @@ async function boot() {
     // --- OSINT Feeds ---
     logBoot('OSINT FEEDS...', 'loading');
     initOSINT();
-    logBoot('OSINT feeds ACTIVE (aircraft, weather, cameras)');
+    logBoot('OSINT feeds ACTIVE (aircraft, weather)');
+    setBootProgress(88);
+
+    // --- Voice Command System ---
+    logBoot('VOICE SYSTEMS...', 'loading');
+    initSpeech();
+    logBoot(speechEngine.isAvailable() ? 'Voice command ONLINE' : 'Voice command UNAVAILABLE', speechEngine.isAvailable() ? 'success' : 'loading');
     setBootProgress(90);
 
     // --- Register Overlays ---
@@ -883,6 +892,111 @@ function initOSINT() {
 
   // Start feeds (they'll wait for GPS position before first fetch)
   osintFeeds.start();
+
+  // Trigger initial overlay update so widgets show status immediately
+  osintOverlay.update(osintFeeds.data, osintFeeds.getTacticalSummary());
+}
+
+// =============================================================================
+// Voice Command System
+// =============================================================================
+
+function initSpeech() {
+  if (!speechEngine.isAvailable()) return;
+
+  // Wire up data providers so speech engine can generate reports
+  speechEngine.setDataProviders({
+    getState: () => state,
+    getOsint: () => osintFeeds.getTacticalSummary(),
+    getDrones: () => droneManager.getFleetData(),
+    getSuit: () => suitStatus.getStatus(),
+    getMission: () => state.missionContext?.getContext?.() || state.missionContext,
+    getAssessments: () => state.currentAssessments,
+    getTerrain: () => terrainAnalyzer.getLastAnalysis()
+  });
+
+  // Wire up action callbacks
+  speechEngine.onToggleTerrain(() => terrainOverlay.toggle());
+  speechEngine.onShowOsint(() => osintOverlay.togglePanel());
+  speechEngine.onRecallDrones(() => {
+    const fleet = droneManager.getFleetData();
+    if (fleet?.fleet) {
+      for (const drone of fleet.fleet) {
+        if (drone.status === 'ACTIVE' || drone.status === 'TASKED') {
+          droneTasking.issueTask(drone.id, 'RECOVER', {});
+        }
+      }
+    }
+  });
+
+  // Status change → update button visual
+  const voiceBtn = document.getElementById('voice-btn');
+  const voiceIcon = document.getElementById('voice-icon');
+  const voiceStatusEl = document.getElementById('voice-status');
+  const transcriptEl = document.getElementById('voice-transcript');
+
+  speechEngine.onStatusChange((status) => {
+    if (!voiceBtn) return;
+    voiceBtn.className = status !== 'idle' ? status : '';
+    if (voiceStatusEl) {
+      const labels = {
+        idle: 'READY', listening: 'LISTENING', processing: 'PROCESSING',
+        speaking: 'SPEAKING', denied: 'DENIED', error: 'ERROR'
+      };
+      voiceStatusEl.textContent = labels[status] || status.toUpperCase();
+    }
+    if (voiceIcon) {
+      voiceIcon.textContent = status === 'listening' ? 'REC' :
+                               status === 'speaking' ? 'SPK' : 'MIC';
+    }
+    // Hide transcript when idle
+    if (status === 'idle' && transcriptEl) {
+      setTimeout(() => {
+        if (!speechEngine.isListening() && !speechEngine.isSpeaking()) {
+          transcriptEl.classList.remove('visible');
+        }
+      }, 2000);
+    }
+  });
+
+  // Transcript display
+  speechEngine.onTranscript((text, isFinal) => {
+    if (!transcriptEl) return;
+    transcriptEl.textContent = text.toUpperCase();
+    transcriptEl.classList.add('visible');
+    transcriptEl.classList.toggle('final', isFinal);
+  });
+
+  // Push-to-talk button
+  if (voiceBtn) {
+    voiceBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (speechEngine.isSpeaking()) {
+        speechEngine.stopSpeaking();
+      } else if (speechEngine.isListening()) {
+        speechEngine.stopListening();
+      } else {
+        speechEngine.startListening();
+      }
+    });
+
+    // Also handle touchstart/touchend for press-and-hold
+    voiceBtn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (speechEngine.isSpeaking()) {
+        speechEngine.stopSpeaking();
+        return;
+      }
+      speechEngine.startListening();
+    }, { passive: false });
+
+    voiceBtn.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // Let recognition finish naturally - it stops when user stops speaking
+    }, { passive: false });
+  }
 }
 
 // =============================================================================

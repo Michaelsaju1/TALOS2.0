@@ -399,19 +399,109 @@ html, body {
   text-shadow: 0 0 8px rgba(0, 255, 204, 0.6);
 }
 
+/* Voice Command Button */
+#voice-btn {
+  position: fixed;
+  bottom: 42px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.8);
+  border: 2px solid var(--hud-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+#voice-btn:active {
+  transform: translateX(-50%) scale(0.92);
+}
+#voice-btn.listening {
+  border-color: var(--hud-hostile);
+  background: rgba(255, 50, 50, 0.25);
+  animation: voicePulse 1s ease-in-out infinite;
+}
+#voice-btn.speaking {
+  border-color: var(--hud-secondary);
+  background: rgba(0, 170, 255, 0.2);
+}
+#voice-btn.processing {
+  border-color: var(--hud-caution);
+}
+#voice-btn.denied {
+  border-color: var(--hud-hostile);
+  opacity: 0.4;
+}
+@keyframes voicePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 50, 50, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(255, 50, 50, 0); }
+}
+#voice-icon {
+  font-size: 10px;
+  font-weight: bold;
+  font-family: var(--hud-font);
+  letter-spacing: 1px;
+}
+#voice-status {
+  font-size: 6px;
+  font-family: var(--hud-font);
+  letter-spacing: 0.5px;
+  opacity: 0.7;
+  margin-top: 1px;
+}
+
+/* Voice Transcript */
+#voice-transcript {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid var(--hud-primary);
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: var(--hud-font);
+  color: var(--hud-primary);
+  letter-spacing: 1px;
+  text-align: center;
+  min-width: 120px;
+  max-width: 80%;
+  display: none;
+  border-radius: 4px;
+  pointer-events: none;
+}
+#voice-transcript.visible {
+  display: block;
+}
+#voice-transcript.final {
+  color: #ffffff;
+  border-color: var(--hud-secondary);
+}
+
 /* Geolocation Display */
 #geo-display {
   position: fixed;
-  bottom: 36px;
+  bottom: 42px;
   right: 8px;
-  z-index: 30;
+  z-index: 38;
   text-align: right;
   pointer-events: none;
   font-size: 9px;
   letter-spacing: 1px;
   line-height: 1.4;
   text-shadow: 0 0 6px rgba(0, 255, 204, 0.5);
-  opacity: 0.85;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 4px 8px;
+  border: 1px solid rgba(0, 255, 204, 0.2);
+  border-radius: 3px;
 }
 #geo-coords {
   font-size: 10px;
@@ -465,7 +555,6 @@ html, body {
   letter-spacing: 0.5px;
   border-radius: 3px;
   pointer-events: none;
-  display: none;
   min-width: 140px;
   max-width: 170px;
 }
@@ -500,7 +589,6 @@ html, body {
   letter-spacing: 0.5px;
   border-radius: 3px;
   pointer-events: none;
-  display: none;
   min-width: 160px;
   max-width: 200px;
 }
@@ -548,14 +636,16 @@ html, body {
   position: absolute;
   bottom: 0; left: 0; right: 0;
   z-index: 55;
-  background: rgba(0, 0, 0, 0.9);
+  background: rgba(0, 0, 0, 0.95);
   border-top: 2px solid var(--hud-secondary);
   transform: translateY(100%);
   transition: transform 0.3s ease;
   max-height: 70vh;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 10px 12px;
   font-size: 10px;
+  pointer-events: auto;
 }
 #osint-panel.visible {
   transform: translateY(0);

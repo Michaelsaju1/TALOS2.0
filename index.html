@@ -85,13 +85,26 @@
   <div id="osint-alert-bar"></div>
 
   <!-- OSINT Weather Widget (Left Side) -->
-  <div id="osint-weather"></div>
+  <div id="osint-weather">
+    <div class="osint-wx-header">WX <span style="color:var(--hud-caution)">STANDBY</span></div>
+    <div style="opacity:0.5">AWAITING GPS...</div>
+  </div>
 
   <!-- OSINT Aircraft Widget (Left Side, below weather) -->
-  <div id="osint-aircraft"></div>
+  <div id="osint-aircraft">
+    <div class="osint-ac-header">AIR <span style="opacity:0.5">STANDBY</span></div>
+    <div style="opacity:0.5">AWAITING GPS...</div>
+  </div>
 
   <!-- OSINT Panel Toggle (Left Side) -->
   <div id="osint-toggle">OSINT <span id="osint-feed-count">0/5</span></div>
+
+  <!-- Voice Command Button (Bottom Center) -->
+  <div id="voice-btn" title="Push to talk">
+    <div id="voice-icon">MIC</div>
+    <div id="voice-status">READY</div>
+  </div>
+  <div id="voice-transcript"></div>
 
   <!-- Geolocation Display (Bottom Right) -->
   <div id="geo-display">
