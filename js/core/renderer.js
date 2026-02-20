@@ -310,27 +310,26 @@ class Renderer {
      * @private
      */
     _updateDomElements() {
-        // --- FPS display ---
-        const fpsEl = document.getElementById('fps-display');
-        if (fpsEl) {
+        // Cached DOM refs (avoid getElementById every 250ms)
+        if (!this._fpsEl) this._fpsEl = document.getElementById('fps-display');
+        if (!this._clockEl) this._clockEl = document.getElementById('clock');
+        if (!this._detEl) this._detEl = document.getElementById('detection-count');
+
+        if (this._fpsEl) {
             const quality = performanceManager.getQuality();
-            fpsEl.textContent = `${this.fps} FPS | ${quality}`;
+            this._fpsEl.textContent = `${this.fps} FPS | ${quality}`;
         }
 
-        // --- Clock (HH:MM:SS) ---
-        const clockEl = document.getElementById('clock');
-        if (clockEl) {
+        if (this._clockEl) {
             const now = new Date();
             const hh = String(now.getHours()).padStart(2, '0');
             const mm = String(now.getMinutes()).padStart(2, '0');
             const ss = String(now.getSeconds()).padStart(2, '0');
-            clockEl.textContent = `${hh}:${mm}:${ss}`;
+            this._clockEl.textContent = `${hh}:${mm}:${ss}`;
         }
 
-        // --- Detection count ---
-        const detEl = document.getElementById('detection-count');
-        if (detEl) {
-            detEl.textContent = `${this.detectionCount} TGT`;
+        if (this._detEl) {
+            this._detEl.textContent = `${this.detectionCount} TGT`;
         }
     }
 

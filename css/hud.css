@@ -427,6 +427,29 @@ html, body {
   margin-left: 6px;
 }
 
+/* OSINT Tactical Alert Bar */
+#osint-alert-bar {
+  position: absolute;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid var(--hud-caution);
+  padding: 4px 14px;
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  text-align: center;
+  min-width: 200px;
+  display: none;
+  animation: alertPulse 2s ease-in-out infinite;
+}
+@keyframes alertPulse {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 1; }
+}
+
 /* OSINT Weather Widget */
 #osint-weather {
   position: absolute;

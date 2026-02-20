@@ -53,6 +53,35 @@ export class ThreatPanel {
       missionEl.innerHTML = html;
     }
 
+    // OSINT context alerts (between mission impact and enemy analysis)
+    const osintAlertEl = document.getElementById('tp-osint-alerts');
+    if (threatData.osintContext && threatData.osintContext.alerts.length > 0) {
+      if (!osintAlertEl) {
+        // Create the element if it doesn't exist yet
+        const missionEl2 = document.getElementById('tp-mission-impact');
+        if (missionEl2) {
+          const alertDiv = document.createElement('div');
+          alertDiv.id = 'tp-osint-alerts';
+          alertDiv.style.cssText = 'margin:4px 0;';
+          missionEl2.after(alertDiv);
+          this._osintAlertEl = alertDiv;
+        }
+      }
+      const el = this._osintAlertEl || document.getElementById('tp-osint-alerts');
+      if (el) {
+        const oc = threatData.osintContext;
+        let html = `<div style="font-size:9px;opacity:0.6;margin-bottom:2px;">OSINT: ${oc.weatherCondition} | DRONE OPS: <span style="color:${oc.droneOps === 'RED' ? 'var(--hud-hostile)' : oc.droneOps === 'AMBER' ? 'var(--hud-caution)' : 'var(--hud-primary)'}">${oc.droneOps}</span> | AIR: ${oc.aircraftNearby} TRK${oc.militaryAircraft > 0 ? ` (<span style="color:var(--hud-hostile)">${oc.militaryAircraft} MIL</span>)` : ''}</div>`;
+        for (const alert of oc.alerts) {
+          const color = alert.level === 'WARNING' ? 'var(--hud-hostile)' : 'var(--hud-caution)';
+          html += `<div style="color:${color};font-size:9px;">\u26A0 [${alert.source}] ${alert.message}</div>`;
+        }
+        el.innerHTML = html;
+        el.style.display = 'block';
+      }
+    } else if (osintAlertEl) {
+      osintAlertEl.style.display = 'none';
+    }
+
     // Enemy analysis
     const enemyEl = document.getElementById('tp-enemy-analysis');
     if (enemyEl && threatData.enemy) {
@@ -133,6 +162,7 @@ export class ThreatPanel {
           </div>
           <div style="font-size:9px;opacity:0.7;">${coa.missionAlignment}</div>
           <div style="font-size:9px;opacity:0.7;">TIME: ${coa.timeToExecute} | TERRAIN: ${coa.terrainReasoning}</div>
+          ${coa.weatherImpact && !coa.weatherImpact.startsWith('CLEAR') ? `<div style="color:${coa.weatherImpact.includes('RED') ? 'var(--hud-hostile)' : 'var(--hud-caution)'};font-size:9px;">\u2601 WX: ${coa.weatherImpact}</div>` : ''}
           ${coa.civilImpact && coa.civilImpact !== 'NONE' ? `<div style="color:var(--hud-caution);font-size:9px;">\u26A0 CIV: ${coa.civilImpact}</div>` : ''}
           ${coa.timeWarning ? `<div style="color:var(--hud-hostile);font-size:9px;">${coa.timeWarning}</div>` : ''}
         </div>`;

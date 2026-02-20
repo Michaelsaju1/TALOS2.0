@@ -29,10 +29,21 @@ class ThreatEngine {
     this.assessments = new Map(); // trackId → full assessment
     this.missionContext = null;
     this.lastMavenIntel = null;
+    this.osintData = null;       // Raw OSINT feed data (weather, aircraft, etc.)
+    this.osintSummary = null;    // Tactical summary of OSINT
   }
 
   setMissionContext(context) {
     this.missionContext = context;
+  }
+
+  /**
+   * Receive OSINT data for integration into threat analysis and COA generation.
+   * Weather affects drone ops feasibility. Aircraft affects air threat assessment.
+   */
+  setOSINTData(data, summary) {
+    this.osintData = data;
+    this.osintSummary = summary;
   }
 
   // Main analysis entry point - processes all tracked entities
@@ -122,6 +133,9 @@ class ThreatEngine {
     const distance = entity.distance || { meters: 0, confidence: 0.5, zone: 'UNKNOWN' };
     const movement = entity.movement || {};
 
+    // Build OSINT context for this assessment
+    const osintContext = this._buildOSINTContext();
+
     return {
       id: entity.id,
       trackId: entity.trackId,
@@ -131,6 +145,7 @@ class ThreatEngine {
       bbox: entity.bbox,
 
       missionImpact,
+      osintContext,
 
       enemy: enemyAnalysis ? {
         composition: enemyAnalysis.composition.label,
@@ -217,11 +232,30 @@ class ThreatEngine {
   }
 
   _scoreIntelCorrelation(entity, mavenIntel) {
-    if (!mavenIntel) return 0.3;
-    const threat = mavenIntel.threat;
-    if (threat && threat.area_threat_level === 'HIGH') return 0.8;
-    if (threat && threat.area_threat_level === 'MEDIUM') return 0.5;
-    return 0.3;
+    let score = 0.3;
+
+    // Maven intel correlation
+    if (mavenIntel) {
+      const threat = mavenIntel.threat;
+      if (threat && threat.area_threat_level === 'HIGH') score = 0.8;
+      else if (threat && threat.area_threat_level === 'MEDIUM') score = 0.5;
+    }
+
+    // OSINT: Military aircraft nearby elevates area threat
+    if (this.osintSummary) {
+      if (this.osintSummary.militaryAircraft > 0) {
+        score = Math.min(1, score + 0.15); // Military air activity = elevated threat
+      }
+      if (this.osintSummary.emergencyAircraft > 0) {
+        score = Math.min(1, score + 0.1);  // Emergency aircraft = heightened awareness
+      }
+      // Poor visibility from weather = harder to detect threats = higher risk
+      if (this.osintSummary.tacticalImpact === 'SEVERE') {
+        score = Math.min(1, score + 0.1);
+      }
+    }
+
+    return score;
   }
 
   _scoreExposure(entity) {
@@ -426,6 +460,14 @@ class ThreatEngine {
     // Check ROE for this target
     const roeCheck = civilData ? civilAnalyzer.checkROE(targetPos, 'DIRECT_FIRE') : { clear: true, warnings: [] };
 
+    // OSINT: Weather impact on drone operations
+    const droneOpsStatus = this.osintSummary?.droneOps || 'GREEN';
+    const weatherRestricted = droneOpsStatus === 'RED';
+    const weatherDegraded = droneOpsStatus === 'AMBER';
+    const wxDesc = this.osintSummary?.weatherCondition || null;
+    const windSpeed = this.osintSummary?.windSpeed || 0;
+    const visibility = this.osintSummary?.visibilityKm || null;
+
     // COA 1: Strike drone engagement (if hostile + strike available)
     if (classification === 'HOSTILE' && threatLevel > 0.5) {
       const strikeDrone = droneManager.getBestDroneForTask('ENGAGE', targetPos);
@@ -433,10 +475,23 @@ class ThreatEngine {
         const timeFeasible = timeManager.isTimeFeasible('DRONE_STRIKE', urgentETA?.etaSeconds);
         const civilImpact = roeCheck.clear ? 'NONE' : roeCheck.violations[0] || roeCheck.warnings[0] || 'CHECK ROE';
 
+        // OSINT: Weather affects strike confidence
+        let strikeConfidence = roeCheck.clear ? 0.92 : 0.4;
+        let strikeRisk = roeCheck.clear ? 'LOW' : 'HIGH';
+        let weatherWarning = null;
+        if (weatherRestricted) {
+          strikeConfidence *= 0.3;
+          strikeRisk = 'HIGH';
+          weatherWarning = `WEATHER RED: ${wxDesc || 'Severe conditions'} - Wind ${windSpeed}mph. Drone strike NOT recommended.`;
+        } else if (weatherDegraded) {
+          strikeConfidence *= 0.7;
+          weatherWarning = `WEATHER AMBER: ${wxDesc || 'Degraded conditions'} - Wind ${windSpeed}mph. Reduced accuracy.`;
+        }
+
         coas.push({
           action: `Task ${strikeDrone.callsign} (Strike) to engage target ${entity.id}`,
-          confidence: roeCheck.clear ? 0.92 : 0.4,
-          risk: roeCheck.clear ? 'LOW' : 'HIGH',
+          confidence: strikeConfidence,
+          risk: strikeRisk,
           droneAsset: {
             id: strikeDrone.id, callsign: strikeDrone.callsign,
             type: strikeDrone.type, battery: strikeDrone.battery,
@@ -448,6 +503,7 @@ class ThreatEngine {
           timeToExecute: timeFeasible.timeToExecute ? `${timeFeasible.timeToExecute}s` : '~55s',
           terrainReasoning: 'Drone strike from altitude - terrain does not restrict',
           civilImpact,
+          weatherImpact: weatherWarning || 'CLEAR - No weather restrictions',
           targetTrackId: entity.id,
           targetPosition: targetPos
         });
@@ -457,10 +513,20 @@ class ThreatEngine {
     // COA 2: ISR overwatch
     const isrDrone = droneManager.getBestDroneForTask('OVERWATCH', targetPos);
     if (isrDrone) {
+      let isrConfidence = 0.88;
+      let isrWeatherNote = 'CLEAR - No weather restrictions';
+      if (weatherRestricted) {
+        isrConfidence *= 0.4;
+        isrWeatherNote = `WEATHER RED: ${wxDesc || 'Severe'} - ISR degraded. Consider ground observation.`;
+      } else if (weatherDegraded) {
+        isrConfidence *= 0.8;
+        isrWeatherNote = `WEATHER AMBER: Reduced visibility ${visibility != null ? visibility + 'km' : ''} - ISR sensor degraded.`;
+      }
+
       coas.push({
         action: `Task ${isrDrone.callsign} (ISR) to overwatch target ${entity.id}`,
-        confidence: 0.88,
-        risk: 'LOW',
+        confidence: isrConfidence,
+        risk: weatherRestricted ? 'MEDIUM' : 'LOW',
         droneAsset: {
           id: isrDrone.id, callsign: isrDrone.callsign,
           type: isrDrone.type, battery: isrDrone.battery
@@ -471,6 +537,7 @@ class ThreatEngine {
         timeToExecute: '~30s',
         terrainReasoning: 'ISR drone can observe from altitude above terrain obstacles',
         civilImpact: 'NONE',
+        weatherImpact: isrWeatherNote,
         targetTrackId: entity.id,
         targetPosition: targetPos
       });
@@ -480,10 +547,20 @@ class ThreatEngine {
     if (classification === 'HOSTILE' || threatLevel > 0.6) {
       const ewDrone = droneManager.getBestDroneForTask('JAM', targetPos);
       if (ewDrone) {
+        let ewConfidence = 0.75;
+        let ewWeatherNote = 'CLEAR - No weather restrictions';
+        if (weatherRestricted) {
+          ewConfidence *= 0.5;
+          ewWeatherNote = `WEATHER RED: ${wxDesc || 'Severe'} - EW drone flight restricted.`;
+        } else if (weatherDegraded) {
+          ewConfidence *= 0.85;
+          ewWeatherNote = `WEATHER AMBER: Wind ${windSpeed}mph - EW positioning may be degraded.`;
+        }
+
         coas.push({
           action: `Task ${ewDrone.callsign} (EW) to jam enemy communications`,
-          confidence: 0.75,
-          risk: 'LOW',
+          confidence: ewConfidence,
+          risk: weatherRestricted ? 'MEDIUM' : 'LOW',
           droneAsset: {
             id: ewDrone.id, callsign: ewDrone.callsign,
             type: ewDrone.type, battery: ewDrone.battery
@@ -494,6 +571,7 @@ class ThreatEngine {
           timeToExecute: '~15s',
           terrainReasoning: 'EW drone should position behind terrain mask for survivability',
           civilImpact: 'CAUTION: May affect civilian communications',
+          weatherImpact: ewWeatherNote,
           targetPosition: targetPos
         });
       }
@@ -502,9 +580,20 @@ class ThreatEngine {
     // COA 4: Operator reposition to cover
     if (terrainData?.survivability?.bestFightingPositions?.length > 0) {
       const bestPos = terrainData.survivability.bestFightingPositions[0];
+      // In weather-restricted conditions where drones can't fly, operator maneuver becomes MORE important
+      let repositionConfidence = 0.70;
+      let repositionWeather = 'CLEAR';
+      if (weatherRestricted) {
+        repositionConfidence = 0.90; // Elevated: drones can't fly, operator must self-position
+        repositionWeather = `WEATHER RED: Drones grounded - operator self-positioning critical`;
+      } else if (weatherDegraded) {
+        repositionConfidence = 0.80;
+        repositionWeather = `WEATHER AMBER: Drone ops degraded - operator positioning more important`;
+      }
+
       coas.push({
         action: `Reposition to fighting position at [${bestPos.position.map(p => p.toFixed(2))}]`,
-        confidence: 0.70,
+        confidence: repositionConfidence,
         risk: 'MEDIUM',
         droneAsset: null,
         wff: 'MOVEMENT_AND_MANEUVER',
@@ -512,7 +601,8 @@ class ThreatEngine {
         fleetFeasibility: 'N/A - operator movement',
         timeToExecute: '~20s',
         terrainReasoning: `Position offers ${bestPos.coverQuality > 0.7 ? 'hard' : 'partial'} cover, covers ${bestPos.avenuesCovered.length} avenue(s)`,
-        civilImpact: 'NONE'
+        civilImpact: 'NONE',
+        weatherImpact: repositionWeather
       });
     }
 
@@ -520,10 +610,20 @@ class ThreatEngine {
     if (threatLevel > 0.4) {
       const screenDrone = droneManager.getBestDroneForTask('SCREEN', targetPos);
       if (screenDrone) {
+        let screenConfidence = 0.65;
+        let screenWeatherNote = 'CLEAR - No weather restrictions';
+        if (weatherRestricted) {
+          screenConfidence *= 0.4;
+          screenWeatherNote = `WEATHER RED: Screen drone flight restricted.`;
+        } else if (weatherDegraded) {
+          screenConfidence *= 0.8;
+          screenWeatherNote = `WEATHER AMBER: Screen sensor range may be reduced.`;
+        }
+
         coas.push({
           action: `Task ${screenDrone.callsign} (Screen) to establish early warning`,
-          confidence: 0.65,
-          risk: 'LOW',
+          confidence: screenConfidence,
+          risk: weatherRestricted ? 'MEDIUM' : 'LOW',
           droneAsset: {
             id: screenDrone.id, callsign: screenDrone.callsign,
             type: screenDrone.type, battery: screenDrone.battery
@@ -534,6 +634,7 @@ class ThreatEngine {
           timeToExecute: '~40s',
           terrainReasoning: 'Screen drone operates low to ground, uses terrain for concealment',
           civilImpact: 'NONE',
+          weatherImpact: screenWeatherNote,
           targetPosition: targetPos
         });
       }
@@ -593,6 +694,68 @@ class ThreatEngine {
     return alignments[mission]?.[actionType] || 'Supports mission execution';
   }
 
+  // --- OSINT Context (for threat panel display) ---
+
+  _buildOSINTContext() {
+    if (!this.osintSummary) return null;
+
+    const context = {
+      weatherCondition: this.osintSummary.weatherCondition || 'NO DATA',
+      droneOps: this.osintSummary.droneOps || 'UNKNOWN',
+      tacticalImpact: this.osintSummary.tacticalImpact || 'UNKNOWN',
+      windSpeed: this.osintSummary.windSpeed,
+      visibility: this.osintSummary.visibilityKm,
+      aircraftNearby: this.osintSummary.aircraftNearby || 0,
+      militaryAircraft: this.osintSummary.militaryAircraft || 0,
+      alerts: []
+    };
+
+    // Generate OSINT-driven tactical alerts
+    if (this.osintSummary.militaryAircraft > 0) {
+      context.alerts.push({
+        level: 'WARNING',
+        source: 'OSINT-AIR',
+        message: `${this.osintSummary.militaryAircraft} military aircraft in AO - air threat elevated`
+      });
+    }
+    if (this.osintSummary.emergencyAircraft > 0) {
+      context.alerts.push({
+        level: 'CAUTION',
+        source: 'OSINT-AIR',
+        message: `Emergency aircraft active - expect increased activity in area`
+      });
+    }
+    if (this.osintSummary.droneOps === 'RED') {
+      context.alerts.push({
+        level: 'WARNING',
+        source: 'OSINT-WX',
+        message: `DRONE OPS RED: ${this.osintSummary.weatherCondition}. All drone COAs restricted.`
+      });
+    } else if (this.osintSummary.droneOps === 'AMBER') {
+      context.alerts.push({
+        level: 'CAUTION',
+        source: 'OSINT-WX',
+        message: `DRONE OPS AMBER: Degraded conditions. Drone effectiveness reduced.`
+      });
+    }
+    if (this.osintSummary.tacticalImpact === 'SEVERE') {
+      context.alerts.push({
+        level: 'WARNING',
+        source: 'OSINT-WX',
+        message: `SEVERE weather: Visibility ${context.visibility || '?'}km, Wind ${context.windSpeed || '?'}mph. Limit exposure.`
+      });
+    }
+    if (this.osintSummary.visibilityKm != null && this.osintSummary.visibilityKm < 1) {
+      context.alerts.push({
+        level: 'WARNING',
+        source: 'OSINT-WX',
+        message: `VISIBILITY <1km: Switch to thermal/IR sensors. Visual detection severely degraded.`
+      });
+    }
+
+    return context;
+  }
+
   _rankCOAsByMission(coas) {
     if (!this.missionContext) return;
 
@@ -634,23 +797,43 @@ class ThreatEngine {
     return warnings;
   }
 
-  // --- Intel Correlation ---
+  // --- Intel Correlation (Maven + OSINT Fused) ---
 
   _correlateIntel(entity, mavenIntel) {
-    if (!mavenIntel) return 'No external intelligence available';
-
     const parts = [];
 
-    if (mavenIntel.sigint) {
-      parts.push(`SIGINT: ${mavenIntel.sigint.content_summary || 'Activity detected on monitored frequencies'}`);
+    // Maven intel
+    if (mavenIntel) {
+      if (mavenIntel.sigint) {
+        parts.push(`SIGINT: ${mavenIntel.sigint.content_summary || 'Activity detected on monitored frequencies'}`);
+      }
+      if (mavenIntel.threat) {
+        parts.push(`THREAT: Area threat level ${mavenIntel.threat.area_threat_level}`);
+      }
+      if (mavenIntel.humint) {
+        parts.push(`HUMINT (${mavenIntel.humint.source_reliability}${mavenIntel.humint.info_confidence}): ${mavenIntel.humint.narrative || 'Report on file'}`);
+      }
     }
 
-    if (mavenIntel.threat) {
-      parts.push(`THREAT: Area threat level ${mavenIntel.threat.area_threat_level}`);
-    }
-
-    if (mavenIntel.humint) {
-      parts.push(`HUMINT (${mavenIntel.humint.source_reliability}${mavenIntel.humint.info_confidence}): ${mavenIntel.humint.narrative || 'Report on file'}`);
+    // OSINT correlation
+    if (this.osintSummary) {
+      // Military aircraft data
+      if (this.osintSummary.militaryAircraft > 0) {
+        const closest = this.osintSummary.closestAircraft;
+        const closestInfo = closest ? ` (nearest: ${closest.callsign} ${closest.distance?.toFixed(1) || '?'}km BRG ${closest.bearing || '?'}°)` : '';
+        parts.push(`OSINT-AIR: ${this.osintSummary.militaryAircraft} MIL aircraft tracked${closestInfo}`);
+      }
+      if (this.osintSummary.emergencyAircraft > 0) {
+        parts.push(`OSINT-AIR: ${this.osintSummary.emergencyAircraft} EMERGENCY aircraft - area may be active`);
+      }
+      // Weather impact
+      if (this.osintSummary.tacticalImpact && this.osintSummary.tacticalImpact !== 'MINIMAL') {
+        parts.push(`OSINT-WX: Tactical impact ${this.osintSummary.tacticalImpact} (${this.osintSummary.weatherCondition})`);
+      }
+      // Drone ops status
+      if (this.osintSummary.droneOps && this.osintSummary.droneOps !== 'GREEN') {
+        parts.push(`OSINT-WX: Drone ops ${this.osintSummary.droneOps} - wind ${this.osintSummary.windSpeed || '?'}mph`);
+      }
     }
 
     return parts.join(' | ') || 'No correlating intelligence';

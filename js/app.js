@@ -73,9 +73,9 @@ const state = {
 
   // Frame counters for cadence control
   frameCount: 0,
-  detectionCadence: 1,  // TF.js is fast enough for every frame
+  detectionCadence: 3,  // Detect every 3rd frame - tracker fills gaps
   depthCadence: 60,     // Run depth very infrequently (ONNX is slow)
-  intelCadence: 10,     // Run full intel analysis every N frames
+  intelCadence: 30,     // Run full intel analysis every 30 frames (~1/sec at 30fps)
 
   // Flags
   modelsLoaded: { detector: false, depth: false, segmentor: false },
@@ -358,7 +358,7 @@ function activateMission(mission) {
   civilAnalyzer.setROE(mission.rulesOfEngagement);
 
   // Update mission bar display
-  const missionDisplay = document.getElementById('mission-display');
+  const missionDisplay = _dom('mission-display');
   if (missionDisplay) {
     missionDisplay.textContent = `${mission.missionType}: ${mission.taskAndPurpose.substring(0, 60)}...`;
   }
@@ -503,8 +503,12 @@ async function startPerceptionLoop() {
     state.frameCount++;
 
     try {
-      // --- Detection: MediaPipe detectForVideo is SYNCHRONOUS (no await!) ---
-      if (state.modelsLoaded.detector && state.video?.readyState >= 2) {
+      // --- Detection: run every Nth frame, tracker fills gaps ---
+      const shouldDetect = state.modelsLoaded.detector &&
+                           state.video?.readyState >= 2 &&
+                           state.frameCount % state.detectionCadence === 0;
+
+      if (shouldDetect) {
         const rawDetections = state.detector.detect(state.video);
 
         // Normalize bboxes to 0-1 range for tracker and overlays
@@ -536,6 +540,9 @@ async function startPerceptionLoop() {
           },
           onAvenue: null
         }));
+      } else if (state.modelsLoaded.detector && state.currentDetections.length > 0) {
+        // Non-detection frame: tracker predicts positions from last known state
+        // Detections stay as-is, movement vectors still valid via Kalman prediction
       }
 
       // --- Depth estimation (very infrequent) ---
@@ -589,6 +596,13 @@ async function startPerceptionLoop() {
   requestAnimationFrame(processFrame);
 }
 
+// --- Cached DOM references for intel updates (avoid getElementById each frame) ---
+const _domCache = {};
+function _dom(id) {
+  if (!_domCache[id]) _domCache[id] = document.getElementById(id);
+  return _domCache[id];
+}
+
 function runIntelligenceAnalysis() {
   const mavenIntel = state.maven ? {
     sigint: state.maven.getLatest('sigint'),
@@ -607,7 +621,7 @@ function runIntelligenceAnalysis() {
   );
 
   // Update scene display
-  const sceneEl = document.getElementById('scene-type');
+  const sceneEl = _dom('scene-type');
   if (sceneEl) sceneEl.textContent = `SCENE: ${scene.type}`;
 
   // Terrain analysis
@@ -617,7 +631,11 @@ function runIntelligenceAnalysis() {
   );
   terrainOverlay.update(terrain);
 
-  // Full threat analysis (METT-TC integrated)
+  // Feed OSINT data to threat engine for decision-making integration
+  const osintSummary = osintFeeds.getTacticalSummary();
+  threatEngine.setOSINTData(osintFeeds.data, osintSummary);
+
+  // Full threat analysis (METT-TC integrated + OSINT-enhanced)
   state.currentAssessments = threatEngine.analyze(
     state.currentDetections,
     state.currentDepthMap, state.depthWidth, state.depthHeight,
@@ -646,13 +664,13 @@ function runIntelligenceAnalysis() {
   // Update OSINT overlay (data updates via callback, but refresh heading)
   osintOverlay.setOperatorHeading(currentHeading || 0);
 
-  // Update bottom bar
+  // Update bottom bar (cached DOM refs)
   const threatCount = state.currentAssessments.filter(a => a.classification === 'HOSTILE').length;
   const civCount = civilData.civilianPresence?.classification?.civilian || 0;
-  const threatSummary = document.getElementById('threat-summary');
-  const civSummary = document.getElementById('civ-summary');
-  if (threatSummary) threatSummary.textContent = `THREATS: ${threatCount}`;
-  if (civSummary) civSummary.textContent = `CIV: ${civCount}`;
+  const threatSumEl = _dom('threat-summary');
+  const civSumEl = _dom('civ-summary');
+  if (threatSumEl) threatSumEl.textContent = `THREATS: ${threatCount}`;
+  if (civSumEl) civSumEl.textContent = `CIV: ${civCount}`;
 
   // Update drone fleet DOM
   droneManager.updateDOM();

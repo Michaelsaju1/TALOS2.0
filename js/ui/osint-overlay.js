@@ -15,12 +15,26 @@ export class OSINTOverlay {
     this._visible = true;
     this._operatorHeading = 0;
     this._panelVisible = false;
+    this._lastDomUpdate = 0;
+    this._domThrottleMs = 2000; // Only update DOM every 2 seconds
+    // Cached DOM refs
+    this._elWeather = null;
+    this._elAircraft = null;
+    this._elOsintDot = null;
+    this._elFeedCount = null;
+    this._elPanelContent = null;
+    this._elPanel = null;
   }
 
   update(osintData, tacticalSummary) {
     this.osintData = osintData;
     this.tacticalSummary = tacticalSummary;
-    this._updateDOM();
+    // Throttle DOM updates to prevent layout thrashing
+    const now = Date.now();
+    if (now - this._lastDomUpdate > this._domThrottleMs) {
+      this._lastDomUpdate = now;
+      this._updateDOM();
+    }
   }
 
   setOperatorHeading(heading) {
@@ -32,9 +46,14 @@ export class OSINTOverlay {
     return this._visible;
   }
 
+  _getPanel() {
+    if (!this._elPanel) this._elPanel = document.getElementById('osint-panel');
+    return this._elPanel;
+  }
+
   togglePanel() {
     this._panelVisible = !this._panelVisible;
-    const panel = document.getElementById('osint-panel');
+    const panel = this._getPanel();
     if (panel) {
       panel.classList.toggle('visible', this._panelVisible);
     }
@@ -46,7 +65,7 @@ export class OSINTOverlay {
 
   hidePanel() {
     this._panelVisible = false;
-    const panel = document.getElementById('osint-panel');
+    const panel = this._getPanel();
     if (panel) panel.classList.remove('visible');
   }
 
@@ -213,13 +232,15 @@ export class OSINTOverlay {
     this._updateWeatherWidget();
     this._updateAircraftWidget();
     this._updateOSINTStatus();
+    this._updateTacticalAlerts();
     if (this._panelVisible) {
       this._updatePanelContent();
     }
   }
 
   _updateWeatherWidget() {
-    const el = document.getElementById('osint-weather');
+    if (!this._elWeather) this._elWeather = document.getElementById('osint-weather');
+    const el = this._elWeather;
     if (!el || !this.osintData?.weather?.current) {
       if (el) el.style.display = 'none';
       return;
@@ -248,7 +269,8 @@ export class OSINTOverlay {
   }
 
   _updateAircraftWidget() {
-    const el = document.getElementById('osint-aircraft');
+    if (!this._elAircraft) this._elAircraft = document.getElementById('osint-aircraft');
+    const el = this._elAircraft;
     if (!el) return;
 
     const ac = this.osintData?.aircraft;
@@ -286,8 +308,10 @@ export class OSINTOverlay {
   }
 
   _updateOSINTStatus() {
-    const dot = document.getElementById('osint-dot');
-    const statusEl = document.getElementById('osint-feed-count');
+    if (!this._elOsintDot) this._elOsintDot = document.getElementById('osint-dot');
+    if (!this._elFeedCount) this._elFeedCount = document.getElementById('osint-feed-count');
+    const dot = this._elOsintDot;
+    const statusEl = this._elFeedCount;
     if (!this.tacticalSummary) return;
 
     const ts = this.tacticalSummary;
@@ -300,11 +324,68 @@ export class OSINTOverlay {
   }
 
   // ===========================================================================
+  // Tactical Alerts - OSINT-driven decision support on HUD
+  // ===========================================================================
+
+  _updateTacticalAlerts() {
+    if (!this._elAlertBar) {
+      this._elAlertBar = document.getElementById('osint-alert-bar');
+    }
+    const el = this._elAlertBar;
+    if (!el) return;
+
+    if (!this.tacticalSummary) {
+      el.style.display = 'none';
+      return;
+    }
+
+    const alerts = [];
+    const ts = this.tacticalSummary;
+
+    // Military aircraft alert
+    if (ts.militaryAircraft > 0) {
+      alerts.push({ color: 'var(--hud-hostile)', text: `AIR THREAT: ${ts.militaryAircraft} MIL AIRCRAFT` });
+    }
+    // Drone ops restriction
+    if (ts.droneOps === 'RED') {
+      alerts.push({ color: 'var(--hud-hostile)', text: `DRONE OPS RED: ${ts.weatherCondition}` });
+    } else if (ts.droneOps === 'AMBER') {
+      alerts.push({ color: 'var(--hud-caution)', text: `DRONE OPS DEGRADED: ${ts.weatherCondition}` });
+    }
+    // Severe weather
+    if (ts.tacticalImpact === 'SEVERE') {
+      alerts.push({ color: 'var(--hud-hostile)', text: `SEVERE WX: VIS ${ts.visibilityKm || '?'}km WIND ${ts.windSpeed || '?'}mph` });
+    }
+    // Low visibility
+    if (ts.visibilityKm != null && ts.visibilityKm < 1) {
+      alerts.push({ color: 'var(--hud-caution)', text: `LOW VIS: SWITCH TO THERMAL` });
+    }
+    // Emergency aircraft
+    if (ts.emergencyAircraft > 0) {
+      alerts.push({ color: 'var(--hud-caution)', text: `EMRG AIRCRAFT: AREA ACTIVE` });
+    }
+
+    if (alerts.length === 0) {
+      el.style.display = 'none';
+      return;
+    }
+
+    // Show the most important alert (rotate if multiple)
+    const idx = Math.floor(Date.now() / 3000) % alerts.length;
+    const alert = alerts[idx];
+    el.style.display = 'block';
+    el.style.color = alert.color;
+    el.style.borderColor = alert.color;
+    el.textContent = `\u26A0 ${alert.text}`;
+  }
+
+  // ===========================================================================
   // Full OSINT Panel (slide-up detail view)
   // ===========================================================================
 
   _updatePanelContent() {
-    const content = document.getElementById('osint-panel-content');
+    if (!this._elPanelContent) this._elPanelContent = document.getElementById('osint-panel-content');
+    const content = this._elPanelContent;
     if (!content || !this.osintData) return;
 
     let html = '';
@@ -353,6 +434,30 @@ export class OSINTOverlay {
         `;
       }
       html += '</div>';
+    }
+
+    // Decision Support section - how OSINT enables faster decisions
+    if (this.tacticalSummary) {
+      const ts = this.tacticalSummary;
+      html += `
+        <div class="osint-section">
+          <div class="osint-section-title">DECISION SUPPORT</div>
+          <div class="osint-row"><span>Drone Ops Status</span><span style="color:${ts.droneOps === 'RED' ? 'var(--hud-hostile)' : ts.droneOps === 'AMBER' ? 'var(--hud-caution)' : 'var(--hud-primary)'}; font-weight:bold">${ts.droneOps}</span></div>
+          <div class="osint-row"><span>Tactical Weather</span><span style="color:${ts.tacticalImpact === 'SEVERE' ? 'var(--hud-hostile)' : ts.tacticalImpact !== 'MINIMAL' ? 'var(--hud-caution)' : 'var(--hud-primary)'}">${ts.tacticalImpact}</span></div>
+          <div class="osint-row"><span>Air Threat</span><span style="color:${ts.militaryAircraft > 0 ? 'var(--hud-hostile)' : 'var(--hud-primary)'}">${ts.militaryAircraft > 0 ? `${ts.militaryAircraft} MIL TRACKED` : 'CLEAR'}</span></div>
+          <div style="margin-top:6px;font-size:9px;opacity:0.8;border-top:1px solid rgba(255,255,255,0.1);padding-top:4px;">
+            <div style="font-weight:bold;margin-bottom:3px;color:var(--hud-secondary)">HOW OSINT ACCELERATES DECISIONS:</div>
+            ${ts.droneOps === 'RED' ? '<div style="color:var(--hud-hostile)">\u2022 WEATHER: All drone COAs auto-downranked. System recommends operator self-positioning.</div>' :
+              ts.droneOps === 'AMBER' ? '<div style="color:var(--hud-caution)">\u2022 WEATHER: Drone COA confidence reduced 20-30%. Strike accuracy degraded.</div>' :
+              '<div>\u2022 WEATHER: All drone platforms cleared for ops. Full COA suite available.</div>'}
+            ${ts.militaryAircraft > 0 ? '<div style="color:var(--hud-hostile)">\u2022 AIR: Military aircraft detected - area threat score elevated 15%. Intel correlation enhanced.</div>' : '<div>\u2022 AIR: No military air activity. Ground threat assessment baseline.</div>'}
+            ${ts.tacticalImpact === 'SEVERE' ? '<div style="color:var(--hud-hostile)">\u2022 VISIBILITY: Severe impact on detection range. Recommend thermal/IR sensors.</div>' :
+              ts.visibilityKm != null && ts.visibilityKm < 3 ? '<div style="color:var(--hud-caution)">\u2022 VISIBILITY: Reduced. Detection confidence adjusted. ISR drone may need lower altitude.</div>' :
+              '<div>\u2022 VISIBILITY: Good conditions. Full sensor effectiveness.</div>'}
+            <div>\u2022 Wind ${ts.windSpeed || '--'}mph ${ts.windDirection != null ? this._degreesToCardinal(ts.windDirection) : '--'} factors into drone tasking time estimates and strike accuracy.</div>
+          </div>
+        </div>
+      `;
     }
 
     // Feed status section
