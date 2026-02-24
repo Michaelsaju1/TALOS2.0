@@ -811,14 +811,85 @@ function initGeolocation() {
   const locationEl = document.getElementById('geo-location');
   if (!coordsEl || !locationEl) return;
 
+  let gpsAcquired = false;
+
+  // IP-based geolocation fallback (used when GPS unavailable)
+  async function fallbackToIP() {
+    if (gpsAcquired) return; // GPS already working, skip
+    console.log('[GEO] GPS unavailable - falling back to IP geolocation');
+    try {
+      let lat, lon, city, region;
+
+      // Helper: fetch with 5s timeout (compatible with all browsers)
+      async function fetchIP(url) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 5000);
+        try {
+          const resp = await fetch(url, { signal: ctrl.signal });
+          clearTimeout(timer);
+          return resp.ok ? await resp.json() : null;
+        } catch (_) {
+          clearTimeout(timer);
+          return null;
+        }
+      }
+
+      // Try ipapi.co first
+      let data = await fetchIP('https://ipapi.co/json/');
+      if (data && data.latitude && data.longitude) {
+        lat = data.latitude;
+        lon = data.longitude;
+        city = data.city;
+        region = data.region;
+      }
+
+      // Fallback to ipwho.is
+      if (!lat || !lon) {
+        data = await fetchIP('https://ipwho.is/');
+        if (data && data.latitude && data.longitude && data.success) {
+          lat = data.latitude;
+          lon = data.longitude;
+          city = data.city;
+          region = data.region;
+        }
+      }
+
+      if (lat && lon) {
+        console.log(`[GEO] IP geolocation: ${lat.toFixed(4)}, ${lon.toFixed(4)} (${city}, ${region})`);
+        coordsEl.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        if (city && region) {
+          locationEl.textContent = `${city}, ${region}`.toUpperCase();
+        }
+        osintFeeds.setPosition(lat, lon);
+      } else {
+        console.warn('[GEO] IP geolocation failed, feeds will not have position data');
+        coordsEl.textContent = 'IP FALLBACK FAILED';
+      }
+    } catch (err) {
+      console.warn('[GEO] IP fallback error:', err.message);
+    }
+  }
+
   if (!navigator.geolocation) {
     coordsEl.textContent = 'NO GPS';
-    locationEl.textContent = 'UNAVAILABLE';
+    locationEl.textContent = 'IP LOCATE...';
+    fallbackToIP();
     return;
   }
 
+  // Set a timeout - if GPS doesn't respond in 5s, use IP fallback
+  const gpsTimeout = setTimeout(() => {
+    if (!gpsAcquired) {
+      console.log('[GEO] GPS timeout after 5s, trying IP fallback');
+      locationEl.textContent = 'IP LOCATE...';
+      fallbackToIP();
+    }
+  }, 5000);
+
   navigator.geolocation.watchPosition(
     (pos) => {
+      gpsAcquired = true;
+      clearTimeout(gpsTimeout);
       const lat = pos.coords.latitude;
       const lon = pos.coords.longitude;
       coordsEl.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
@@ -837,6 +908,8 @@ function initGeolocation() {
       console.warn('[GEO] Error:', err.message);
       coordsEl.textContent = 'NO SIGNAL';
       locationEl.textContent = err.code === 1 ? 'DENIED' : 'ERROR';
+      // Fall back to IP geolocation
+      fallbackToIP();
     },
     { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
   );
